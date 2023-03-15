@@ -13,3 +13,4 @@ This is split into two major steps, which will be trained individually.
 - GRU, [Kyunghyun Cho et al. 2014](https://arxiv.org/abs/1409.1259)
 - Transformer, [Vaswani et al. 2017](https://arxiv.org/abs/1706.03762)
 - Makemore, [Andrej Karpathy 2022](https://github.com/karpathy/makemore)
+- Permutation-equivariant neural networks, [Guttenberg et al. 2016](https://arxiv.org/pdf/1612.04530.pdf)
