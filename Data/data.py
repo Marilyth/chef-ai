@@ -6,6 +6,7 @@ import json
 import inflect
 import csv
 import requests
+from tqdm import tqdm
 
 
 class Instruction:
@@ -18,11 +19,11 @@ class Instruction:
 class Ingredient:
     def __init__(self, name: str, amount: str, unit: str):
         self.name: str = name
-        self.amount: str = amount
+        self.amount: str = amount if amount else "1"
         self.unit: str = unit
 
     def __str__(self):
-        return f"{' '.join([self.amount, self.unit])}:{self.name}".replace(",", "")
+        return f"{' '.join([self.amount, self.unit]).strip()}:{self.name}".replace(",", "")
 
 class Recipe:
     def __init__(self, name: str, stars: float, ratings: int):
@@ -39,9 +40,10 @@ class Recipe:
         self.instructions.append(instruction)
 
     def __str__(self) -> str:
-        ingredients_string = f"[{','.join([str(ingredient) for ingredient in self.ingredients])}]"
+        ingredients_string = f"[{','.join([ingredient.name for ingredient in self.ingredients])}]"
+        units_string = f"[{','.join([' '.join([ingredient.amount, ingredient.unit]).strip() for ingredient in self.ingredients])}]"
         instructions_string = f"[{','.join([str(instruction) for instruction in self.instructions])}]"
-        return f"{self.name.replace(',', '')},{ingredients_string},{instructions_string}"
+        return f"{self.name.replace(',', '')},{ingredients_string},{units_string},{instructions_string}"
 
 
 def crawl_food_com(start_index: int = 0, recipes_to_retrieve: int = -1):
@@ -57,8 +59,14 @@ def crawl_food_com(start_index: int = 0, recipes_to_retrieve: int = -1):
     with open("./Data/recipes.csv", "a+") as recipes_file:
         # Will break if no more recipes are found.
         recipes_retrieved = 0
-        i = (start_index // 10) + 1
-        while recipes_to_retrieve == -1 or recipes_retrieved < recipes_to_retrieve:
+        first_page = trending_page.format(1)
+        response = requests.get(first_page).text
+        total_recipes = int(json.loads(response.split("var initialData = ")[-1].split(";\n\n</script>")[0])["response"]["totalResultsCount"])
+        end_index = (min(total_recipes, recipes_to_retrieve + start_index) if recipes_to_retrieve > 0 else total_recipes) - 1
+        end_page_index = (end_index // 10) + 1
+        start_page_index = (start_index // 10) + 1
+
+        for i in tqdm(range(start_page_index, end_page_index + 1), f"Page progression"):
             try:
                 current_page = trending_page.format(i)
                 response = requests.get(current_page).text
@@ -72,7 +80,7 @@ def crawl_food_com(start_index: int = 0, recipes_to_retrieve: int = -1):
                         recipe_object = json.loads(recipe_data)
 
                         # Add ingredients.
-                        for ingredient in recipe_object["recipeIngredient"][:]:
+                        for ingredient in recipe_object["recipeIngredient"][(start_index % 10) if i == start_page_index else 0:]:
                             # Always take first option.
                             ingredient = ingredient.split(" or ")[0]
                             ingredient_description = ingredient.split("   ")[-1]
@@ -89,8 +97,7 @@ def crawl_food_com(start_index: int = 0, recipes_to_retrieve: int = -1):
                         for instruction in recipe_object["recipeInstructions"]:
                             current_recipe.add_instruction(Instruction(instruction["text"].strip()))
 
-                        recipes_file.write(F"{start_index + recipes_retrieved},{current_recipe}\n")
-
+                        recipes_file.write(f"{start_index + recipes_retrieved},{current_recipe}\n")
                     except Exception as e:
                         print(f"Fetching recipe failed: {e}\n{recipe}")
                     
@@ -138,7 +145,7 @@ def _download_recipes():
         exit(1)
 
 
-_download_recipes()
+#_download_recipes()
 ingredient_to_code: Dict[str, int] = {}
 code_to_ingredient: Dict[int, str] = {}
 

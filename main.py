@@ -2,5 +2,5 @@ from Data.data import get_ingredient_lists, encode_ingredient_lists, get_ingredi
 import Models.MLP
 
 if __name__ == "__main__":
-    #crawl_food_com(500009, 5)
-    Models.MLP.create_mlp()
+    crawl_food_com(0, 500)
+    #Models.MLP.create_mlp()
