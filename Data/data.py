@@ -146,8 +146,8 @@ def _download_recipes():
 
 
 #_download_recipes()
-ingredient_to_code: Dict[str, int] = {}
-code_to_ingredient: Dict[int, str] = {}
+ingredient_to_code: Dict[str, int] = {".": 0}
+code_to_ingredient: Dict[int, str] = {0: "."}
 
 
 def get_ingredient_lists() -> List[List[str]]:
@@ -182,16 +182,16 @@ def get_ingredient_lists() -> List[List[str]]:
     else:
         with open("./Data/ingredients.csv", "r") as ingredients_file:
             ingredient_lists = list(csv.reader(ingredients_file, delimiter=","))
+            ingredient_lists = [ingredient_list for ingredient_list in ingredient_lists]
 
     ingredient_set: Set[str] = set()
     for ingredient_list in ingredient_lists:
         for ingredient in ingredient_list:
             ingredient_set.add(ingredient)
 
-    for i, ingredient in enumerate(ingredient_set):
-        ingredient_to_code[ingredient] = i
-        code_to_ingredient[i] = ingredient
-    max_code = i
+    for i, ingredient in enumerate(sorted(list(ingredient_set))):
+        ingredient_to_code[ingredient] = i + 1
+        code_to_ingredient[i + 1] = ingredient
 
     return ingredient_lists
 
@@ -226,3 +226,24 @@ def get_ingredient_counts(ingredient_lists: List[List[Any]]) -> List[Tuple[Any, 
             counts_dict[ingredient] += 1
     
     return sorted(list(counts_dict.items()), key=lambda x: x[-1], reverse=True)
+
+
+def create_ngram(corpus: List[List[Any]], n: int = 2) -> Tuple[List[List[Any]]]:
+    """Splits the corpus into a dataset with a context length of n.
+
+    Args:
+        corpus (List[List[Any]]): The original dataset.
+        n (int, optional): The context length. Defaults to 2.
+
+    Returns:
+        Tuple[List[List[Any]]]: The dataset.
+    """
+    data = []
+
+    for word in corpus:
+        context = [0] * n
+        for segment in word + [0]:
+            context = context[1:] + [segment]
+            data.append(context)
+    
+    return data

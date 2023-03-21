@@ -128,4 +128,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-recipes.csv
+*.csv
+*.txt
+*.pkl

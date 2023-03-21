@@ -2,75 +2,166 @@ from typing import *
 import torch
 import torch.nn as nn
 import torch.utils.data
-from Data.data import get_ingredient_lists, encode_ingredient_lists, ingredient_to_code
+from Data.data import *
 import tqdm
 
 
-def create_ngram(corpus: List[List[Any]], n: int = 2) -> Tuple[List[List[Any]]]:
-    """Splits the corpus into a dataset with a context length of n.
+class MLP:
+    def __init__(self, context_length: int = 5, hidden_layers: int = 2, neurons: int = 300):
+        """Initializes a multi layer perception model with the specified arguments.
 
-    Args:
-        corpus (List[List[Any]]): The original dataset.
-        n (int, optional): The context length. Defaults to 2.
+        Args:
+            context_length (int, optional): The context length the predict the next ingredient with. Defaults to 5.
+            hidden_layers (int, optional): _description_. Defaults to 2.
+            neurons (int, optional): _description_. Defaults to 300.
+        """
+        self.generator = torch.Generator().manual_seed(42)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.context_length = context_length
+        self.model = nn.Sequential()
 
-    Returns:
-        Tuple[List[List[Any]]]: The dataset.
-    """
-    data = []
+        self._prepare(hidden_layers, neurons)
 
-    for word in corpus:
-        context = [0] * n
-        for segment in word + [0]:
-            context = context[1:] + [segment]
-            data.append(context)
+        if torch.cuda.is_available():
+            self.model.cuda()
+
+    def _prepare(self, hidden_layers = 2, neurons = 300):
+        """Builds the model, fetches the data and splits it.
+        """
+        # Prepare data.
+        ingredients = encode_ingredient_lists(get_ingredient_lists())
+        data = torch.tensor(create_ngram(ingredients[:50000], self.context_length + 1))
+        train_length = int(0.8 * len(data))
+        valid_length = int(0.1 * len(data))
+        test_length = len(data) - train_length - valid_length
+
+        train_set, valid_set, test_set = torch.utils.data.random_split(data, [train_length, valid_length, test_length], self.generator)
+        self.train_set, self.valid_set, self.test_set = train_set.dataset[train_set.indices], valid_set.dataset[valid_set.indices], test_set.dataset[test_set.indices]
+
+        # Create layers.
+        self.model.add_module("linear_in", nn.Linear(self.context_length, neurons, bias=False))
+        self.model.add_module("batch_in", nn.BatchNorm1d(neurons))
+        self.model.add_module("activation_in", nn.ReLU())
+
+        for i in range(hidden_layers):
+            self.model.add_module(f"hidden_linear_{i}", nn.Linear(neurons, neurons, bias=False))
+            self.model.add_module(f"hidden_batch_{i}", nn.BatchNorm1d(neurons))
+            self.model.add_module(f"hidden_activation_{i}", nn.ReLU())
+        
+        self.model.add_module("linear_out", nn.Linear(neurons, len(ingredient_to_code)))
+
+    def train(self, max_epochs: int = 20, batch_size: int = 4096) -> List[List[float]]:
+        """Trains the model for as long as the validation loss decreases.
+
+        Args:
+            max_epochs (int, optional): The maximum amount of epochs to train for. The model will abort if the validation loss gain gets too small.
+            batch_size (int, optional): The amount of data points to evaluate at once. Defaults to 4096 (fits in roughly 4GB of VRAM).
+
+        Returns:
+            List[List[float]]: The training and validation losses.
+        """
+        self.model.train()
+
+        sampler = torch.utils.data.DataLoader(self.train_set, batch_size, shuffle=True, generator=self.generator)
+        batches = len(sampler)
     
-    return torch.tensor(data)
+        optimizer = torch.optim.AdamW(self.model.parameters())
+        losses = [[],[]]
 
+        epoch = 1
+        last_state_dict = {}
 
-def create_mlp(context_length = 2):
-    ingredients = encode_ingredient_lists(get_ingredient_lists())
-    data = create_ngram(ingredients[:10000])
-    train_length = int(0.8 * len(data))
-    valid_length = int(0.1 * len(data))
-    test_length = len(data) - train_length - valid_length
+        while True:
+            avg_loss = 0
+            for batch in tqdm.tqdm(sampler, total=len(sampler), desc=f"Epoch {epoch}"):
+                optimizer.zero_grad()
 
-    train_set, valid_set, test_set = torch.utils.data.random_split(data, [train_length, valid_length, test_length], torch.Generator().manual_seed(42))
+                x = batch[:, :-1].float().to(self.device)
+                y = batch[:, -1].to(self.device)
 
-    # Create a NN with context_length features in, and amount of ingredients features out.
-    mlp = nn.Sequential(
-            nn.Linear(context_length - 1, 15),
-            nn.BatchNorm1d(15),
-            nn.ReLU(),
+                logits = self.model.forward(x)
+                loss = torch.nn.functional.cross_entropy(logits, y)
+                loss.backward()
+                avg_loss += loss.item() / batches
 
-            nn.Linear(15, len(ingredient_to_code)),
-            nn.BatchNorm1d(len(ingredient_to_code)),
-            nn.ReLU(),
+                optimizer.step()
 
-            nn.Softmax()
-    )
+            losses[0].append(avg_loss)
+            losses[1].append(self.test(valid_set=True, batch_size=batch_size))
+            print(f"Average training loss of current epoch: {avg_loss}")
+            print(f"Validation loss of current epoch: {losses[1][-1]}")
 
-    mlp.train(True)
+            epoch += 1
+            gain = (losses[1][-2] - losses[1][-1]) if len(losses[1]) > 1 else 1
+            if gain < 0:
+                # Validation error increased, load last state and abort.
+                print(f"Validation loss increased. Resetting state to last epoch and aborting.")
+                self.model.load_state_dict(last_state_dict)
+                break
+            if epoch >= max_epochs:
+                break
 
-    epochs = 4
-    sampler = torch.utils.data.DataLoader(train_set, 8)
-    #loader = torch.utils.data.DataLoader(sampler)
-    loss_fn: nn.CrossEntropyLoss = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(mlp.parameters(), lr=2e-5, eps=1e-4)
-    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, 1e-4, 1, len(sampler) * epochs)
+            last_state_dict = self.model.state_dict()
 
-    for epoch in range(epochs):
+        return losses
+    
+    def test(self, valid_set: bool = False, batch_size: int = 4096) -> float:
+        """Tests the current model on the specified dataset.
+
+        Args:
+            valid_set (bool, optional): Whether to use the validation set instead of the test set. Defaults to False.
+            batch_size (int, optional): The amount of data points to evaluate at once. Defaults to 4096 (fits in roughly 4GB of VRAM).
+
+        Returns:
+            float: The cross entropy loss.
+        """
+        self.model.eval()
+
+        sampler = torch.utils.data.DataLoader(self.valid_set if valid_set else self.test_set, batch_size, shuffle=True, generator=self.generator)
         batches = len(sampler)
 
-        for batch in tqdm.tqdm(sampler, total=len(sampler), desc=f"Epoch {epoch + 1}/{epochs}"):
-            optimizer.zero_grad()
+        avg_loss = 0
+        for batch in sampler:
+            x = batch[:, :-1].float().to(self.device)
+            y = batch[:, -1].to(self.device)
 
-            x = batch[:, 0]
-            y = batch[:, 1]
+            logits = self.model.forward(x)
+            loss = torch.nn.functional.cross_entropy(logits, y)
+            avg_loss += loss.item() / batches
 
-            logits = mlp.forward(x)
-            loss = loss_fn.forward(logits, y)
-            loss.backward()
+        return avg_loss
 
-            optimizer.step()
-            scheduler.step()
+    def generate_recipe_ingredients(self) -> List[str]:
+        """Generates ingredients for a recipe.
 
+        Returns:
+            List[str]: The ingredients.
+        """
+        self.model.eval()
+
+        ingredients = []
+        context = [0] * self.context_length
+
+        while True:
+            logits = self.model.forward(torch.tensor([context], dtype=torch.float).to(self.device))
+            probs = torch.nn.functional.softmax(logits, dim=1)
+            while True:
+                # Loop until new ingredient.
+                ingredient_code = torch.multinomial(probs, num_samples=1).item()
+                if ingredient_code not in ingredients:
+                    break
+
+            if ingredient_code == 0:
+                break
+
+            context = context[1:] + [ingredient_code]
+            ingredients.append(ingredient_code)
+        
+        return [code_to_ingredient[i] for i in ingredients]
+
+    def save_model(self):
+        torch.save(self.model.state_dict(), "./Models/MLP.pkl")
+
+    def load_model(self):
+        state_dict = torch.load("./Models/MLP.pkl")
+        self.model.load_state_dict(state_dict)
