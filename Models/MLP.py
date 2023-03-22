@@ -7,30 +7,34 @@ import tqdm
 
 
 class MLP:
-    def __init__(self, context_length: int = 5, hidden_layers: int = 2, neurons: int = 300):
+    def __init__(self, context_length: int, hidden_layers: int, neurons: int, embedding_dimension: int):
         """Initializes a multi layer perception model with the specified arguments.
 
         Args:
-            context_length (int, optional): The context length the predict the next ingredient with. Defaults to 5.
-            hidden_layers (int, optional): _description_. Defaults to 2.
-            neurons (int, optional): _description_. Defaults to 300.
+            context_length (int): The context length the predict the next ingredient with.
+            hidden_layers (int): The amount of hidden layers in the MLP.
+            neurons (int): The amount of neurons within the MLP's hidden layers.
+            embedding_dimension (int): The dimension of the embedding layer of the MLP.
         """
         self.generator = torch.Generator().manual_seed(42)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.context_length = context_length
+        self.embedding_dimension = embedding_dimension
+        self.neurons = neurons
+        self.hidden_layers = hidden_layers
         self.model = nn.Sequential()
 
-        self._prepare(hidden_layers, neurons)
+        self._prepare()
 
         if torch.cuda.is_available():
             self.model.cuda()
 
-    def _prepare(self, hidden_layers = 2, neurons = 300):
+    def _prepare(self):
         """Builds the model, fetches the data and splits it.
         """
         # Prepare data.
         ingredients = encode_ingredient_lists(get_ingredient_lists())
-        data = torch.tensor(create_ngram(ingredients[:50000], self.context_length + 1))
+        data = torch.tensor(create_ngram(ingredients, self.context_length + 1))
         train_length = int(0.8 * len(data))
         valid_length = int(0.1 * len(data))
         test_length = len(data) - train_length - valid_length
@@ -39,16 +43,19 @@ class MLP:
         self.train_set, self.valid_set, self.test_set = train_set.dataset[train_set.indices], valid_set.dataset[valid_set.indices], test_set.dataset[test_set.indices]
 
         # Create layers.
-        self.model.add_module("linear_in", nn.Linear(self.context_length, neurons, bias=False))
-        self.model.add_module("batch_in", nn.BatchNorm1d(neurons))
+        self.model.add_module("embed", nn.Embedding(len(ingredient_to_code), self.embedding_dimension))
+        self.model.add_module("flatten", nn.Flatten())
+
+        self.model.add_module("linear_in", nn.Linear(self.context_length * self.embedding_dimension, self.neurons, bias=False))
+        self.model.add_module("batch_in", nn.BatchNorm1d(self.neurons))
         self.model.add_module("activation_in", nn.ReLU())
 
-        for i in range(hidden_layers):
-            self.model.add_module(f"hidden_linear_{i}", nn.Linear(neurons, neurons, bias=False))
-            self.model.add_module(f"hidden_batch_{i}", nn.BatchNorm1d(neurons))
+        for i in range(self.hidden_layers):
+            self.model.add_module(f"hidden_linear_{i}", nn.Linear(self.neurons, self.neurons, bias=False))
+            self.model.add_module(f"hidden_batch_{i}", nn.BatchNorm1d(self.neurons))
             self.model.add_module(f"hidden_activation_{i}", nn.ReLU())
         
-        self.model.add_module("linear_out", nn.Linear(neurons, len(ingredient_to_code)))
+        self.model.add_module("linear_out", nn.Linear(self.neurons, len(ingredient_to_code)))
 
     def train(self, max_epochs: int = 20, batch_size: int = 4096) -> List[List[float]]:
         """Trains the model for as long as the validation loss decreases.
@@ -76,7 +83,7 @@ class MLP:
             for batch in tqdm.tqdm(sampler, total=len(sampler), desc=f"Epoch {epoch}"):
                 optimizer.zero_grad()
 
-                x = batch[:, :-1].float().to(self.device)
+                x = batch[:, :-1].to(self.device)
                 y = batch[:, -1].to(self.device)
 
                 logits = self.model.forward(x)
@@ -122,7 +129,7 @@ class MLP:
 
         avg_loss = 0
         for batch in sampler:
-            x = batch[:, :-1].float().to(self.device)
+            x = batch[:, :-1].to(self.device)
             y = batch[:, -1].to(self.device)
 
             logits = self.model.forward(x)
@@ -132,7 +139,13 @@ class MLP:
         return avg_loss
 
     def generate_recipe_ingredients(self) -> List[str]:
-        """Generates ingredients for a recipe.
+        """Generates ingredients for a recipe. Here are a few samples:
+
+        flour, baking powder, baking soda, salt, banana, butter, brown sugar, egg, vanilla
+
+        ground beef, ground pork, onion, garlic clove, crushed tomato, egg, fresh parsley, salt & freshly ground black pepper, romano cheese
+
+        green cabbage, onion, garlic clove, ham hock, beef broth, parsley, fresh cilantro, salt, pepper, salsa, paprika, chili powder
 
         Returns:
             List[str]: The ingredients.
@@ -143,7 +156,7 @@ class MLP:
         context = [0] * self.context_length
 
         while True:
-            logits = self.model.forward(torch.tensor([context], dtype=torch.float).to(self.device))
+            logits = self.model.forward(torch.tensor([context]).to(self.device))
             probs = torch.nn.functional.softmax(logits, dim=1)
             while True:
                 # Loop until new ingredient.
