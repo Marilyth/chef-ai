@@ -3,3 +3,4 @@ pandas
 inflect
 torch
 tqdm
+tiktoken

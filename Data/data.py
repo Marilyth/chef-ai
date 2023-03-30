@@ -7,6 +7,7 @@ import inflect
 import csv
 import requests
 from tqdm import tqdm
+import tiktoken
 
 
 class Instruction:
@@ -148,7 +149,16 @@ def _download_recipes():
 #_download_recipes()
 ingredient_to_code: Dict[str, int] = {".": 0}
 code_to_ingredient: Dict[int, str] = {0: "."}
-
+gpt_encoder = tiktoken.get_encoding("gpt2")
+enc = tiktoken.Encoding(name="gpt2_recipe", 
+                        pat_str=gpt_encoder._pat_str,
+                        mergeable_ranks=gpt_encoder._mergeable_ranks,
+                        special_tokens={
+                            **gpt_encoder._special_tokens,
+                            "<|ingredients_end|>": 50257,
+                            "<|next_step|>": 50258,
+                            "<|padding|>": 50259,
+                        })
 
 def get_ingredient_lists() -> List[List[str]]:
     """Returns all recipe's ingredients.
@@ -196,6 +206,30 @@ def get_ingredient_lists() -> List[List[str]]:
     return ingredient_lists
 
 
+def get_recipes() -> List[str]:
+    """Returns a list of string, each containing a full recipe.
+    """
+    data_frame = pandas.read_csv("./Data/RAW_recipes.csv")
+    ingredient_lists = data_frame["ingredients"].to_list()
+    instruction_lists = data_frame["steps"].to_list()
+    recipes = []
+
+    for ingredients, instructions in zip(ingredient_lists, instruction_lists):
+        recipe = ingredients.replace("['", "").replace("']", "").replace("', '", ", ") + "<|ingredients_end|>"
+        recipe += instructions.replace("['", "").replace("']", "").replace("', '", "<|next_step|>") + "<|endoftext|>"
+        recipes.append(recipe)
+
+    return recipes
+
+
+def encode_recipes(recipes: List[str]) -> List[List[int]]:
+    return enc.encode_batch(recipes, allowed_special="all")
+
+
+def decode_recipes(recipes: List[List[int]]) -> List[str]:
+    return [enc.decode(recipe) for recipe in recipes]
+
+
 def encode_ingredient_lists(ingredient_lists: List[List[str]]) -> List[List[int]]:
     """Creates an encoded ingredient list, equivalent to the passed one.
 
@@ -228,12 +262,14 @@ def get_ingredient_counts(ingredient_lists: List[List[Any]]) -> List[Tuple[Any, 
     return sorted(list(counts_dict.items()), key=lambda x: x[-1], reverse=True)
 
 
-def create_ngram(corpus: List[List[Any]], n: int = 2) -> Tuple[List[List[Any]]]:
+def create_ngram(corpus: List[List[Any]], n: int = 2, pad_code: int = 0, add_ending: bool = True) -> Tuple[List[List[Any]]]:
     """Splits the corpus into a dataset with a context length of n.
 
     Args:
         corpus (List[List[Any]]): The original dataset.
         n (int, optional): The context length. Defaults to 2.
+        pad_code (int, optional): The encoding for the padding character. Defaults to 0.
+        add_ending (bool, optional): Whether to include a padding in the end. Defaults to True.
 
     Returns:
         Tuple[List[List[Any]]]: The dataset.
@@ -241,8 +277,8 @@ def create_ngram(corpus: List[List[Any]], n: int = 2) -> Tuple[List[List[Any]]]:
     data = []
 
     for word in corpus:
-        context = [0] * n
-        for segment in word + [0]:
+        context = [pad_code] * n
+        for segment in (word + [0]) if add_ending else word:
             context = context[1:] + [segment]
             data.append(context)
     
