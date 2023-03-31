@@ -283,3 +283,28 @@ def create_ngram(corpus: List[List[Any]], n: int = 2, pad_code: int = 0, add_end
             data.append(context)
     
     return data
+
+
+def create_sliding(corpus: List[List[Any]], n: int = 2, pad_code: int = 0) -> Tuple[List[List[Any]]]:
+    """Creates a sliding window of maximum size n, beginning with 1 pad. 
+    Useful for transformers who can learn on any context length.
+    If the text does not contain n words, it keeps its size + 1 (left pad).
+    ["i", "am", "a", "test"], n=100
+    ["pad", "i", "am", "a", "test"]
+
+    Args:
+        corpus (List[List[Any]]): The original dataset.
+        n (int, optional): The maximum window size. Defaults to 2.
+        pad_code (int, optional): The encoding for the padding character. Defaults to 0.
+
+    Returns:
+        Tuple[List[List[Any]]]: The dataset.
+    """
+    data = []
+
+    for word in corpus:
+        context = [pad_code] + word
+        for i in range(max((len(word) + 1) - n, 1)):
+            data.append(context[i:i + n])
+    
+    return data

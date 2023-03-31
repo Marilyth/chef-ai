@@ -50,7 +50,7 @@ class MultiHeadedAttention(nn.Module):
         return out
 
 class FeedForward(nn.Module):
-    def __init__(self, context_length: int, neurons: int, embedding_dimension: int, dropout: float):
+    def __init__(self, embedding_dimension: int, neurons: int, dropout: float):
         super().__init__()
         self.model = nn.Sequential(
             nn.Linear(embedding_dimension, neurons),
@@ -63,10 +63,10 @@ class FeedForward(nn.Module):
         return self.model(x)
 
 class DecoderBlock(nn.Module):
-    def __init__(self, context_length: int, embedding_dimension: int, neurons: int, heads: int, dropout: float):
+    def __init__(self, embedding_dimension: int, neurons: int, heads: int, dropout: float):
         super().__init__()
         self.attention = MultiHeadedAttention(heads, embedding_dimension // heads, embedding_dimension, dropout)
-        self.feed_forward = FeedForward(context_length, neurons, embedding_dimension, dropout)
+        self.feed_forward = FeedForward(embedding_dimension, neurons, dropout)
         self.attention_layernorm = nn.LayerNorm(embedding_dimension)
         self.feed_forward_layernorm = nn.LayerNorm(embedding_dimension)
 
@@ -95,25 +95,24 @@ class Transformer(nn.Module):
         self.blocks = blocks
         self.heads = heads
         self.dropout = dropout
-        self.positional_embedding = nn.Embedding(self.context_length, self.embedding_dimension)
+        self.positional_encoding = nn.Embedding(self.context_length, self.embedding_dimension)
         self.model = nn.Sequential()
         self.embedding = nn.Embedding(vocabulary_size, self.embedding_dimension)
         self.register_buffer("positions", torch.arange(context_length))
 
         # Create blocks.
         for i in range(self.blocks):
-            self.model.add_module(f"decoderblock_{i}", DecoderBlock(self.context_length, self.embedding_dimension, self.neurons, self.heads, self.dropout))
+            self.model.add_module(f"decoderblock_{i}", DecoderBlock(self.embedding_dimension, self.neurons, self.heads, self.dropout))
         
         self.model.add_module(f"layer_norm_out", nn.LayerNorm(self.embedding_dimension))
         self.model.add_module(f"linear_out", nn.Linear(self.embedding_dimension, vocabulary_size))
     
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
         B, T = x.shape
         positional_embedding = self.embedding(x)
-        positional_embedding += self.positional_embedding(self.positions)
-        out = self.model.forward(positional_embedding)
+        positional_embedding += self.positional_encoding(torch.arange(T, device=x.device))
 
-        return out
+        return self.model.forward(positional_embedding)
 
 
 class TransformerTrainer:
@@ -135,20 +134,38 @@ class TransformerTrainer:
         self.model = Transformer(context_length, blocks, neurons, embedding_dimension, heads, dropout, enc.n_vocab)
         self.model.to(self.device)
 
+    def _collate_fn_pad(self, batch):
+        """Pad the batch to be of uniform context length.
+        """
+        # Pad tensors to be of uniform length.
+        batch = [ torch.Tensor(t) for t in batch ]
+        batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True, padding_value=50259)
+
+        # Mask to ignore padded values.
+        with torch.no_grad():
+            mask = (batch != 50259)
+
+        return batch, mask
+
     def _prepare(self):
         """Builds the model, fetches the data and splits it.
         """
         # Prepare data.
         recipes = encode_recipes(get_recipes()[:5000])
-        data = torch.tensor(create_ngram(recipes, self.context_length + 1, 50259, False))
+
+        # This data is of variable length. It needs to be packed before forward pass.
+        data = [torch.tensor(datapoint) for datapoint in create_sliding(recipes, self.context_length + 1, 50259)]
+
         train_length = int(0.8 * len(data))
         valid_length = int(0.1 * len(data))
         test_length = len(data) - train_length - valid_length
 
         train_set, valid_set, test_set = torch.utils.data.random_split(data, [train_length, valid_length, test_length], self.generator)
-        self.train_set, self.valid_set, self.test_set = train_set.dataset[train_set.indices], valid_set.dataset[valid_set.indices], test_set.dataset[test_set.indices]
+        self.train_set, self.valid_set, self.test_set = [train_set.dataset[i] for i in train_set.indices],\
+                                                        [valid_set.dataset[i] for i in valid_set.indices],\
+                                                        [test_set.dataset[i] for i in test_set.indices]
 
-    def train(self, max_epochs: int = 20, max_time: int = -1, max_iterations: int = -1, batch_size: int = 16) -> List[List[float]]:
+    def train(self, max_epochs: int = 20, max_time: int = -1, max_iterations: int = -1, batch_size: int = 8) -> List[List[float]]:
         """Trains the model for as long as the validation loss decreases.
 
         Args:
@@ -156,6 +173,7 @@ class TransformerTrainer:
             max_time (int, optional): The maximum amount of seconds to train for. If the training takes longer, it breaks.
             max_iterations (int, optional): The maximum amount batches to train on.
             batch_size (int, optional): The amount of data points to evaluate at once. Defaults to 32.
+            gradient_accumulation (int, optional): The amount of batches to go through before doing an optimizer step.
 
         Returns:
             List[List[float]]: The training and validation losses.
@@ -163,10 +181,9 @@ class TransformerTrainer:
         self._prepare()
         self.model.train()
 
-        sampler = torch.utils.data.DataLoader(self.train_set, batch_size, shuffle=True, generator=self.generator)
-        batches = len(sampler)
+        sampler = torch.utils.data.DataLoader(self.train_set, batch_size, shuffle=True, generator=self.generator, collate_fn=self._collate_fn_pad)
     
-        optimizer = torch.optim.AdamW(self.model.parameters(), eps=1e-8)
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3)
         losses = [[],[]]
 
         epoch = 1
@@ -175,31 +192,42 @@ class TransformerTrainer:
         last_state_dict = {}
 
         while True:
-            for batch in tqdm.tqdm(sampler, total=len(sampler), desc=f"Epoch {epoch}"):
-                optimizer.zero_grad()
+            for batch, mask in tqdm.tqdm(sampler, total=len(sampler), desc=f"Epoch {epoch}"):
+                try:
+                    optimizer.zero_grad()
+                    
+                    # The data was padded to make it loadable. Pack it to ignore padded data.
+                    x = batch[:, :-1].to(self.device)
+                    y = batch[:, 1:].to(self.device)
 
-                x = batch[:, :-1].to(self.device)
-                y = batch[:, 1:].to(self.device)
+                    logits: torch.Tensor = self.model.forward(x)
 
-                logits = self.model.forward(x)
-                B, T, C = logits.shape
-                targets = y.view(B*T)
-                logits = logits.view(B*T, C)
-                loss = torch.nn.functional.cross_entropy(logits, targets)
-                losses[0].append(loss.item())
-                loss.backward()
+                    # False for every example that has pad as target.
+                    y_mask = mask[:, 1:].to(self.device)
 
-                optimizer.step()
+                    packed_logits = logits[y_mask] # Squashes to B*T, C where mask is True.
+                    packed_y = y[y_mask] # Squashes to B*T where mask is True.
 
-                iteration += 1
-                if iteration == max_iterations or (max_time > 0 and time.time() > end_time):
-                    print(f"Average training loss: {sum(losses[0][-100:]) / (100)}")
-                    return
+                    loss = torch.nn.functional.cross_entropy(packed_logits, packed_y) # Only compute loss on non-padded outputs.
+                    loss.backward()
+                    optimizer.step()
 
-            losses[0].append(self.test(test_set=self.train_set, batch_size=batch_size))
-            losses[1].append(self.test(test_set=self.valid_set, batch_size=batch_size))
-            print(f"Training loss of current epoch: {losses[0][-1]}")
-            print(f"Validation loss of current epoch: {losses[1][-1]}")
+                    iteration += 1
+
+                    if iteration == max_iterations or (max_time > 0 and time.time() > end_time):
+                        epoch = max_epochs
+                        return
+                    
+                    # Show current performance every once in a while.
+                    if iteration % 100 == 0:
+                        losses[0].append(self.test(test_set=self.train_set[:100], batch_size=batch_size))
+                        losses[1].append(self.test(test_set=self.valid_set[:100], batch_size=batch_size))
+                        print(f"Training loss of current epoch: {losses[0][-1]}")
+                        print(f"Validation loss of current epoch: {losses[1][-1]}")
+                except KeyboardInterrupt as e:
+                    print("Saving model...")
+                    self.save_model()
+                    exit()
 
             epoch += 1
             gain = (losses[1][-2] - losses[1][-1]) if len(losses[1]) > 1 else 1
@@ -216,7 +244,7 @@ class TransformerTrainer:
         return losses
     
     @torch.no_grad()
-    def test(self, test_set: Any, batch_size: int = 32) -> float:
+    def test(self, test_set: Any, batch_size: int = 16) -> float:
         """Tests the current model on the specified dataset.
 
         Args:
@@ -228,26 +256,28 @@ class TransformerTrainer:
         """
         self.model.eval()
 
-        sampler = torch.utils.data.DataLoader(test_set, batch_size, shuffle=True, generator=self.generator)
+        sampler = torch.utils.data.DataLoader(test_set, batch_size, shuffle=True, generator=self.generator, collate_fn=self._collate_fn_pad)
         batches = len(sampler)
 
         avg_loss = 0
-        for batch in sampler:
+        for batch, mask in sampler:
             x = batch[:, :-1].to(self.device)
             y = batch[:, 1:].to(self.device)
 
-            logits = self.model.forward(x)
-            B, T, C = logits.shape
-            targets = y.view(B*T)
-            logits = logits.view(B*T, C)
+            # False for every example that has pad as target.
+            y_mask = mask[:, 1:].to(self.device)
+
+            logits: torch.Tensor = self.model.forward(x)
+            packed_logits = logits[y_mask] # Squashes to B*T, C where mask is True.
+            packed_y = y[y_mask] # Squashes to B*T where mask is True.
             
-            loss = torch.nn.functional.cross_entropy(logits, targets)
+            loss = torch.nn.functional.cross_entropy(packed_logits, packed_y)
             avg_loss += loss.item() / batches
 
         return avg_loss
 
     @torch.no_grad()
-    def generate_recipe(self, ingredients: str = None) -> str:
+    def generate_recipe(self, ingredients: str = None, print_live: bool = True) -> str:
         """Generates a recipe from a list of ingredients.
         Or generates a complete recipe if none are provided.
 
@@ -283,17 +313,18 @@ class TransformerTrainer:
         """
         self.model.eval()
 
-        recipe = []
-        context = [50259] * self.context_length
+        recipe_codes = []
+        recipe_text = "Ingredients:\n"
+        # Start with 1 padding.
+        context = [50259]
 
         # Fill context will recipe.
         if ingredients:
+            recipe_text = ingredients
+            print("\nInstructions:\n", end="")
             ingredients += "<|ingredients_end|>"
-            recipe = encode_recipes([ingredients])[0]
-            for i, word in enumerate(recipe):
-                word_index = self.context_length - len(recipe) + i
-                if word_index >= 0:
-                    context[word_index] = word
+            recipe_codes = encode_recipes([ingredients])[0]
+            context += recipe_codes
 
         while True:
             # Model generated result for every index of context. We only need the last one.
@@ -307,19 +338,26 @@ class TransformerTrainer:
             if recipe_code == 50259:
                 continue
             
-            context = context[1:] + [recipe_code]
-            recipe.append(recipe_code)
+            context.append(recipe_code)
+            if len(context) > self.context_length:
+                context = context[1:]
+                
+            recipe_codes.append(recipe_code)
+
+            # Make recipe look nicer.
+            next_text = enc.decode([recipe_code]).replace("<|padding|>", "")\
+                                                 .replace("<|next_step|>", "\n\nNext:\n")\
+                                                 .replace("<|ingredients_end|>", "\n\nInstructions:\n")\
+                                                 .replace("<|endoftext|>", "\n\n")
+            if print_live:
+                print(next_text, end="")
+            recipe_text += next_text
 
             # End of text reached.
             if recipe_code == 50256:
                 break
         
-        # Make recipe look nicer.
-        return "Ingredients:\n" + \
-               decode_recipes([recipe])[0].replace("<|endoftext|>", "")\
-                                          .replace("<|padding|>", "")\
-                                          .replace("<|next_step|>", "\n\nNext:\n")\
-                                          .replace("<|ingredients_end|>", "\n\nInstructions:\n")
+        return recipe_text
 
     def save_model(self):
         torch.save(self.model.state_dict(), "./Models/Instructions/Transformer.pkl")
