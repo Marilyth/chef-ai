@@ -151,7 +151,7 @@ class TransformerTrainer:
         """Builds the model, fetches the data and splits it.
         """
         # Prepare data.
-        recipes = encode_recipes(get_recipes()[:5000])
+        recipes = encode_recipes(get_recipes()[:140000])
 
         # This data is of variable length. It needs to be packed before forward pass.
         data = [torch.tensor(datapoint) for datapoint in create_sliding(recipes, self.context_length + 1, 50259)]
@@ -219,15 +219,16 @@ class TransformerTrainer:
                         return
                     
                     # Show current performance every once in a while.
-                    if iteration % 100 == 0:
-                        losses[0].append(self.test(test_set=self.train_set[:100], batch_size=batch_size))
-                        losses[1].append(self.test(test_set=self.valid_set[:100], batch_size=batch_size))
-                        print(f"Training loss of current epoch: {losses[0][-1]}")
-                        print(f"Validation loss of current epoch: {losses[1][-1]}")
+                    if iteration % 1000 == 0:
+                        print(f"Training loss of current epoch: {self.test(test_set=self.train_set[:100], batch_size=batch_size)}")
+                        print(f"Validation loss of current epoch: {self.test(test_set=self.valid_set[:100], batch_size=batch_size)}")
                 except KeyboardInterrupt as e:
                     print("Saving model...")
                     self.save_model()
                     exit()
+
+            losses[0].append(self.test(test_set=self.train_set[:100], batch_size=batch_size))
+            losses[1].append(self.test(test_set=self.valid_set[:100], batch_size=batch_size))
 
             epoch += 1
             gain = (losses[1][-2] - losses[1][-1]) if len(losses[1]) > 1 else 1
@@ -236,7 +237,7 @@ class TransformerTrainer:
                 print(f"Validation loss increased. Resetting state to last epoch and aborting.")
                 self.model.load_state_dict(last_state_dict)
                 break
-            if epoch >= max_epochs:
+            if epoch > max_epochs:
                 break
 
             last_state_dict = self.model.state_dict()

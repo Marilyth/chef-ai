@@ -14,5 +14,5 @@ if __name__ == "__main__":
 
             transformer.generate_recipe(ingredients)
     else:
-        transformer.train(max_epochs=4)
+        print(transformer.train(max_epochs=4))
         transformer.save_model()

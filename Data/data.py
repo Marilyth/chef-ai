@@ -215,8 +215,8 @@ def get_recipes() -> List[str]:
     recipes = []
 
     for ingredients, instructions in zip(ingredient_lists, instruction_lists):
-        recipe = ingredients.replace("['", "").replace("']", "").replace("', '", ", ") + "<|ingredients_end|>"
-        recipe += instructions.replace("['", "").replace("']", "").replace("', '", "<|next_step|>") + "<|endoftext|>"
+        recipe = ingredients.replace("['", "").replace("']", "").replace("', '", ", ").replace("', \"", ", ").replace("\", '", ", ").replace("\", \"", ", ") + "<|ingredients_end|>"
+        recipe += instructions.replace("['", "").replace("']", "").replace("', '", "<|next_step|>").replace("', \"", "<|next_step|>").replace("\", '", "<|next_step|>").replace("\", \"", "<|next_step|>") + "<|endoftext|>"
         recipes.append(recipe)
 
     return recipes
