@@ -17,41 +17,81 @@ class SelfAttentionHead(nn.Module):
         self.key = nn.Linear(self.embedding_dimension, self.head_size, bias=False)
         self.query = nn.Linear(self.embedding_dimension, self.head_size, bias=False)
         self.value = nn.Linear(self.embedding_dimension, self.head_size, bias=False)
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout) # Dropout to prevent overfitting.
 
+        # Mask to prevent the model from looking at future tokens.
+        # This is done by creating a triangular matrix with ones on the lower diagonal.
+        # This matrix is then multiplied with the attention weights.
+        # This will ensure that the attention weights of future tokens are set to zero.
         self.register_buffer("tril", torch.tril(torch.ones(embedding_dimension, embedding_dimension)))
 
-    def forward(self, x):
-        B, T, C = x.shape
+    def forward(self, x: torch.Tensor):
+        """Forward pass of the self attention head.
+        
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The output tensor.
+        """
+        B, T, C = x.shape # Batch size, sequence length, embedding dimension.
 
         key = self.key.forward(x)
         query = self.query.forward(x)
         
         # Attention weights.
         weights = query @ key.transpose(-1, -2) * C **-0.5 # Prevent weights from becoming one-hot.
-        weights = weights.masked_fill(self.tril[:T, :T] == 0, float("-inf")) # Decoder. Ensure future tokens aren't taken into account.
-        weights = nn.functional.softmax(weights, dim=-1)
-        weights = self.dropout(weights)
+        weights = weights.masked_fill(self.tril[:T, :T] == 0, float("-inf")) # Mask future tokens.
+        weights = nn.functional.softmax(weights, dim=-1) # Softmax to ensure the weights sum up to one.
+        weights = self.dropout(weights) # Dropout to prevent overfitting.
 
         values = self.value(x)
         return weights @ values
     
 class MultiHeadedAttention(nn.Module):
+    """Multi headed attention layer. This layer consists of multiple self attention heads.
+    The results of these heads are concatenated and projected to the embedding dimension. This is done to increase the model's capacity.
+
+    Args:
+        heads (int): The amount of heads.
+        head_size (int): The size of each head.
+        embedding_dimension (int): The dimension of the embedding layer.
+        dropout (float): The dropout factor for regularization.
+    """
     def __init__(self, heads, head_size, embedding_dimension, dropout: float):
         super().__init__()
         self.heads = nn.ModuleList([SelfAttentionHead(head_size, embedding_dimension, dropout) for i in range(heads)])
         self.projection = nn.Linear(embedding_dimension, embedding_dimension)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the multi headed attention layer.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The output tensor.
+        """
         # Concatenate the results of all heads.
-        out = torch.cat([head(x) for head in self.heads], dim=-1)
+        out = torch.cat([head(x) for head in self.heads], dim=-1) # Concatenate the heads.
         out = self.dropout(self.projection(out))
         return out
 
 class FeedForward(nn.Module):
+    """Feed forward layer. This layer consists of two linear layers with a ReLU activation function in between.
+    ReLU is used to introduce non-linearity to the model. Dropout is used to prevent overfitting and improve generalization.
+    """
     def __init__(self, embedding_dimension: int, neurons: int, dropout: float):
+        """Initializes a feed forward layer with the specified arguments.
+
+        Args:
+            embedding_dimension (int): The dimension of the embedding layer.
+            neurons (int): The amount of neurons within the feed forward layer.
+            dropout (float): The dropout factor for regularization.
+        """
         super().__init__()
+        # Two linear layers with a ReLU activation function in between. Dropout is used to prevent overfitting.
         self.model = nn.Sequential(
             nn.Linear(embedding_dimension, neurons),
             nn.ReLU(),
@@ -59,34 +99,70 @@ class FeedForward(nn.Module):
             nn.Dropout(dropout)
             )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
+        """Forward pass of the feed forward layer.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The output tensor.
+        """
         return self.model(x)
 
 class DecoderBlock(nn.Module):
+    """Decoder block. This block consists of a multi headed attention layer and a feed forward layer.
+    Layernorm is used to normalize the output of the attention layer and the feed forward layer because it improves the training process.
+    """
+    
     def __init__(self, embedding_dimension: int, neurons: int, heads: int, dropout: float):
+        """Initializes a decoder block with the specified arguments.
+
+        Args:
+            embedding_dimension (int): The dimension of the embedding layer.
+            neurons (int): The amount of neurons within the feed forward layer.
+            heads (int): The amount of heads.
+            dropout (float): The dropout factor for regularization.
+        """
         super().__init__()
+        
+        # Multi headed attention layer. The embedding dimension is divided by the amount of heads to ensure that the concatenated heads have the same dimension as the embedding dimension.
         self.attention = MultiHeadedAttention(heads, embedding_dimension // heads, embedding_dimension, dropout)
         self.feed_forward = FeedForward(embedding_dimension, neurons, dropout)
         self.attention_layernorm = nn.LayerNorm(embedding_dimension)
         self.feed_forward_layernorm = nn.LayerNorm(embedding_dimension)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the decoder block. The output of the attention layer and the feed forward layer are added to the input.
+        This is done to ensure that the input is not lost. The output of the attention layer and the feed forward layer are normalized with layernorm.
+        This is done to improve the training process.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The output tensor.
+        """
         x = x + self.attention(self.attention_layernorm(x))
         x = x + self.feed_forward(self.feed_forward_layernorm(x))
         return x
 
 class Transformer(nn.Module):
+    """Transformer model. This model consists of an embedding layer, a positional encoding layer, multiple decoder blocks and a linear layer. 
+    The embedding layer is used to learn the representation of the words. The positional encoding layer is used to learn the position of the words.
+    The decoder blocks are used to learn the relationships between the words. The linear layer is used to predict the next word.
+    """
     def __init__(self, context_length: int, blocks: int, neurons: int, embedding_dimension: int, heads: int, dropout: float, vocabulary_size: int):
         """Initializes a multi layer perception model with the specified arguments.
 
         Args:
-            context_length (int): The context length the predict the next ingredient with.
-            blocks (int): The amount of blocks within the transformer.
+            context_length (int): The length of the context. This is the amount of words that are used to predict the next word.
+            blocks (int): The amount of decoder blocks.
             neurons (int): The amount of neurons within the feed forward layer.
             embedding_dimension (int): The dimension of the embedding layer.
-            heads (int): The amount of heads in the multi head attention layer.
+            heads (int): The amount of heads.
             dropout (float): The dropout factor for regularization.
-            vocabulary_size (int): The amount of words to learn.
+            vocabulary_size (int): The size of the vocabulary.
         """
         super().__init__()
         self.context_length = context_length
@@ -100,22 +176,36 @@ class Transformer(nn.Module):
         self.embedding = nn.Embedding(vocabulary_size, self.embedding_dimension)
         self.register_buffer("positions", torch.arange(context_length))
 
-        # Create blocks.
+        # Add the decoder blocks to the model.
         for i in range(self.blocks):
             self.model.add_module(f"decoderblock_{i}", DecoderBlock(self.embedding_dimension, self.neurons, self.heads, self.dropout))
         
+        # Add normalization and linear layer to the model. The linear layer is used to predict the next word.
         self.model.add_module(f"layer_norm_out", nn.LayerNorm(self.embedding_dimension))
         self.model.add_module(f"linear_out", nn.Linear(self.embedding_dimension, vocabulary_size))
     
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the transformer model. The input is first embedded and then the positional encoding is added to the input.
+        Afterwards the decoder blocks are applied to the input. The output of the decoder blocks is normalized and then passed through a linear layer.
+
+        Args:
+            x (torch.Tensor): The input tensor of shape (batch_size, context_length).
+
+        Returns:
+            torch.Tensor: The output tensor.
+        """
         B, T = x.shape
         positional_embedding = self.embedding(x)
+        # The positional encoding is added to the input to learn the position of the words.
         positional_embedding += self.positional_encoding(torch.arange(T, device=x.device))
 
         return self.model.forward(positional_embedding)
-
-
+    
 class TransformerTrainer:
+    """Transformer trainer. This class is used to train the transformer model.
+    The model is trained with the Adam optimizer and the cross entropy loss.
+    """
+    
     def __init__(self, context_length: int, blocks: int, neurons: int, embedding_dimension: int, heads: int, dropout: float):
         """Initializes a transformer model with the specified arguments.
 
@@ -134,8 +224,14 @@ class TransformerTrainer:
         self.model = Transformer(context_length, blocks, neurons, embedding_dimension, heads, dropout, enc.n_vocab)
         self.model.to(self.device)
 
-    def _collate_fn_pad(self, batch):
-        """Pad the batch to be of uniform context length.
+    def _collate_fn_pad(self, batch) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Collate function to pad the data to be of uniform length. This is done to improve the training process.
+
+        Args:
+            batch (List[torch.Tensor]): The batch of data.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: The padded batch and the mask to ignore the padded values.
         """
         # Pad tensors to be of uniform length.
         batch = [ torch.Tensor(t) for t in batch ]
@@ -148,7 +244,7 @@ class TransformerTrainer:
         return batch, mask
 
     def _prepare(self):
-        """Builds the model, fetches the data and splits it.
+        """Prepare the data for training. The data is split into a training, validation and test set.
         """
         # Prepare data.
         recipes = encode_recipes(get_recipes()[:140000])
@@ -166,17 +262,18 @@ class TransformerTrainer:
                                                         [test_set.dataset[i] for i in test_set.indices]
 
     def train(self, max_epochs: int = 20, max_time: int = -1, max_iterations: int = -1, batch_size: int = 8) -> List[List[float]]:
-        """Trains the model for as long as the validation loss decreases.
-
+        """Train the model. The model is trained for a maximum of max_epochs, max_time or max_iterations.
+        The training is done with the Adam optimizer and the cross entropy loss.
+        The training aborts when the validation loss gets worse.
+        
         Args:
-            max_epochs (int, optional): The maximum amount of epochs to train for. The model will abort if the validation loss gain gets too small.
-            max_time (int, optional): The maximum amount of seconds to train for. If the training takes longer, it breaks.
-            max_iterations (int, optional): The maximum amount batches to train on.
-            batch_size (int, optional): The amount of data points to evaluate at once. Defaults to 32.
-            gradient_accumulation (int, optional): The amount of batches to go through before doing an optimizer step.
-
+            max_epochs (int, optional): The maximum amount of epochs. Defaults to 20.
+            max_time (int, optional): The maximum amount of time to train. Defaults to -1.
+            max_iterations (int, optional): The maximum amount of iterations to train. Defaults to -1.
+            batch_size (int, optional): The batch size. Defaults to 8.
+        
         Returns:
-            List[List[float]]: The training and validation losses.
+            List[List[float]]: The training and validation loss for each epoch.
         """
         self._prepare()
         self.model.train()
@@ -222,6 +319,7 @@ class TransformerTrainer:
                     if iteration % 1000 == 0:
                         print(f"Training loss of current epoch: {self.test(test_set=self.train_set[:100], batch_size=batch_size)}")
                         print(f"Validation loss of current epoch: {self.test(test_set=self.valid_set[:100], batch_size=batch_size)}")
+                # Save model when interrupted.
                 except KeyboardInterrupt as e:
                     print("Saving model...")
                     self.save_model()
@@ -361,8 +459,12 @@ class TransformerTrainer:
         return recipe_text
 
     def save_model(self):
+        """Saves the current model to disk.
+        """
         torch.save(self.model.state_dict(), "./Models/Instructions/Transformer.pkl")
 
     def load_model(self):
+        """Loads the current model from disk.
+        """
         state_dict = torch.load("./Models/Instructions/Transformer.pkl")
         self.model.load_state_dict(state_dict)
