@@ -7,76 +7,41 @@ import tqdm
 import time
 
 
-class RNNCell(nn.Module):
-    def __init__(self, state_size: int, input_size: int):
-        """Initializes the Recurrent Neural Network cell with the specified arguments.
-
-        Args:
-            state_size (int): The size of the hidden state. The hidden state is the output of the previous iteration.
-            input_size (int): The size of the input.
-        """
-        super().__init__()
-        self.state_size = state_size
-        self.input_size = input_size
-
-        self.input_transform = nn.Linear(input_size, state_size, bias=False)
-        self.hidden_transform = nn.Linear(state_size, state_size, bias=False)
-        self.norm = nn.LayerNorm(state_size)
-
-    def forward(self, x: torch.Tensor, hidden_state: torch.Tensor):
-        x = self.input_transform(x)
-        hidden = self.hidden_transform(hidden_state)
-        hidden = torch.tanh(self.norm(x + hidden))
-
-        return hidden
-
-
-class RNN(nn.Module):
+class RNNTorch(nn.Module):
+    """The RNN model. This model is a simple RNN with an embedding layer and a linear output layer.
+    This is done using the pytorch RNN module, which is much faster than a custom implementation.
+    """
     def __init__(self, state_size: int, embedding_dimension: int, vocabulary_size: int, layers: int = 1):
         super().__init__()
         self.state_size = state_size
         self.embedding_dimension = embedding_dimension
         self.vocabulary_size = vocabulary_size
-        self.hidden_states = None
 
-        self.layers = layers
-        self.cells = nn.ModuleList([RNNCell(state_size, embedding_dimension) for _ in range(layers)])
+        self.rnn = nn.RNN(embedding_dimension, state_size, layers, batch_first=True)
         self.embedding = nn.Embedding(vocabulary_size, embedding_dimension)
         self.output = nn.Linear(state_size, vocabulary_size)
 
-    def forward(self, x: torch.Tensor, discard_states = True):
-        """Forward pass of the RNN. This function is called when the model is called.
-        It takes a batch of sequences and returns the output of the RNN. The output is a tensor of shape (B, T, V)
-        where B is the batch size, T is the sequence length and V is the vocabulary size.
+    def forward(self, x: torch.Tensor, hidden_states = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass through the RNN.
 
         Args:
             x (torch.Tensor): The input tensor of shape (B, T) where B is the batch size and T is the sequence length.
-            discard_states (bool, optional): Whether to discard the hidden states after the forward pass. Defaults to True.
-
+            hidden_states (torch.Tensor, optional): The hidden states of the RNN. Defaults to None.
         Returns:
-            _type_: _description_
+            torch.Tensor: The output of the RNN consisting of the logits and the hidden states.
         """
         B, T = x.shape
 
         x = self.embedding(x)
+        
+        # Forward pass through the RNN. If hidden_states is None, the hidden states are initialized to 0. Otherwise, the hidden states are used.
+        out, hidden_states = self.rnn(x, hidden_states) if hidden_states is not None else self.rnn(x)
 
-        hidden_states = torch.zeros((B, self.state_size), requires_grad=False, device=x.device) if discard_states or self.hidden_states is None else self.hidden_states
-        outputs = torch.zeros((B, T, self.vocabulary_size), requires_grad=False, device=x.device)
+        # The output of the RNN is transformed to the vocabulary size.
+        outputs = self.output(out)
 
-        # Walk through the sequence one step at a time, feeding the output of the previous step as input to the next step.
-        for t in range(T):
-            for layer in range(self.layers):
-                hidden_states = self.cells[layer](x[:, t], hidden_states)
-                #hidden_states = hidden_states.detach()
+        return outputs, hidden_states
 
-            # Transform last hidden layer to the output of the RNN.
-            outputs[:, t] = self.output(hidden_states)
-
-        # Save the hidden states for the next forward pass.
-        if not discard_states:
-            self.hidden_states = hidden_states
-
-        return outputs
     
 class RNNTrainer:
     def __init__(self, embedding_dimension: int, context_length: int, layers: int = 1):
@@ -87,12 +52,11 @@ class RNNTrainer:
             context_length (int): The length of the context.
             layers (int, optional): The amount of layers in the model. Defaults to 1.
         """
-        nn.RNN
         self.generator = torch.Generator().manual_seed(42)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.context_length = context_length
 
-        self.model = RNN(500, embedding_dimension, enc.n_vocab + 1, layers) # Additional word for 0 padding.
+        self.model = RNNTorch(500, embedding_dimension, enc.n_vocab + 1, layers)
         self.model.to(self.device)
 
     def _collate_fn_pad(self, batch):
@@ -150,11 +114,11 @@ class RNNTrainer:
             for batch in tqdm.tqdm(sampler, total=len(sampler), desc=f"Epoch {epoch}"):
                 try:
                     self.model.train()
-                    
+
                     # The data was padded to make it loadable. Pack it to ignore padded data.
                     x = batch[:, :-1].to(self.device)
                     y = batch[:, 1:].to(self.device)
-                    logits = self.model.forward(x)
+                    logits, h = self.model.forward(x)
 
                     B, T, C = logits.shape
                     y = y.reshape(B*T)
@@ -172,7 +136,7 @@ class RNNTrainer:
                         return
                     
                     # Show current performance every once in a while.
-                    if iteration % 10 == 0:
+                    if iteration % 100 == 0:
                         print(f"Training loss of current epoch: {self.test(test_set=self.train_set[:100], batch_size=batch_size)}")
                         print(f"Validation loss of current epoch: {self.test(test_set=self.valid_set[:100], batch_size=batch_size)}")
                 except KeyboardInterrupt as e:
@@ -182,7 +146,6 @@ class RNNTrainer:
 
             losses[0].append(self.test(test_set=self.train_set[:100], batch_size=batch_size))
             losses[1].append(self.test(test_set=self.valid_set[:100], batch_size=batch_size))
-            self.model.train()
 
             epoch += 1
             gain = (losses[1][-2] - losses[1][-1]) if len(losses[1]) > 1 else 1
@@ -219,7 +182,7 @@ class RNNTrainer:
             # The data was padded to make it loadable. Pack it to ignore padded data.
             x = batch[:, :-1].to(self.device)
             y = batch[:, 1:].to(self.device)
-            logits = self.model.forward(x)
+            logits, h = self.model.forward(x)
 
             B, T, C = logits.shape
             y = y.reshape(B*T)
@@ -292,8 +255,8 @@ class RNNTrainer:
         return recipe_text
 
     def save_model(self):
-        torch.save(self.model.state_dict(), "./Models/Instructions/RNN.pkl")
+        torch.save(self.model.state_dict(), "./Models/Instructions/RNNTorch.pkl")
 
     def load_model(self):
-        state_dict = torch.load("./Models/Instructions/RNN.pkl")
+        state_dict = torch.load("./Models/Instructions/RNNTorch.pkl")
         self.model.load_state_dict(state_dict)

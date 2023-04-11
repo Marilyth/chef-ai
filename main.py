@@ -1,3 +1,4 @@
+import Models.Instructions.RNNTorch
 import Models.Instructions.Transformer
 import os
 import sys
@@ -5,14 +6,20 @@ os.add_dll_directory("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.2/b
 
 
 if __name__ == "__main__":
-    transformer = Models.Instructions.Transformer.TransformerTrainer(200, 3, 500, 400, 4, 0.0)
+    model_type = "RNNTorch"
+
+    if model_type == "Transformer":
+        model = Models.Instructions.Transformer.TransformerTrainer(200, 3, 500, 400, 4, 0.0)
+    elif model_type == "RNNTorch":
+        model = Models.Instructions.RNNTorch.RNNTrainer(500, 200, 1)
+
     if "test" in sys.argv:
-        transformer.load_model()
+        model.load_model()
         print("Model is ready. Press Enter for a new sample.")
         while True:
             ingredients = input("If you want, you can provide a comma seperated list of ingredients now: ")
 
-            transformer.generate_recipe(ingredients)
+            model.generate_recipe(ingredients)
     else:
-        print(transformer.train(max_epochs=4))
-        transformer.save_model()
+        print(model.train())
+        model.save_model()

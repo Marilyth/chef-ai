@@ -235,11 +235,11 @@ class TransformerTrainer:
         """
         # Pad tensors to be of uniform length.
         batch = [ torch.Tensor(t) for t in batch ]
-        batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True, padding_value=50259)
+        batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True, padding_value=0)
 
         # Mask to ignore padded values.
         with torch.no_grad():
-            mask = (batch != 50259)
+            mask = (batch != 0)
 
         return batch, mask
 
@@ -247,7 +247,7 @@ class TransformerTrainer:
         """Prepare the data for training. The data is split into a training, validation and test set.
         """
         # Prepare data.
-        recipes = encode_recipes(get_recipes()[:140000])
+        recipes = encode_recipes(get_recipes()[:1000])
 
         # This data is of variable length. It needs to be packed before forward pass.
         data = [torch.tensor(datapoint) for datapoint in create_sliding(recipes, self.context_length + 1, 50259)]
@@ -291,21 +291,20 @@ class TransformerTrainer:
         while True:
             for batch, mask in tqdm.tqdm(sampler, total=len(sampler), desc=f"Epoch {epoch}"):
                 try:
+                    self.model.train()
                     optimizer.zero_grad()
                     
-                    # The data was padded to make it loadable. Pack it to ignore padded data.
+                    # The data was padded to make it loadable.
                     x = batch[:, :-1].to(self.device)
                     y = batch[:, 1:].to(self.device)
 
                     logits: torch.Tensor = self.model.forward(x)
+                    B, T, C = logits.shape
 
-                    # False for every example that has pad as target.
-                    y_mask = mask[:, 1:].to(self.device)
+                    logits = logits.reshape(B * T, C) # Squashes to B*T, C.
+                    y = y.reshape(B * T) # Squashes to B*T.
 
-                    packed_logits = logits[y_mask] # Squashes to B*T, C where mask is True.
-                    packed_y = y[y_mask] # Squashes to B*T where mask is True.
-
-                    loss = torch.nn.functional.cross_entropy(packed_logits, packed_y) # Only compute loss on non-padded outputs.
+                    loss = torch.nn.functional.cross_entropy(logits, y, ignore_index=0) # Only compute loss on non-padded outputs.
                     loss.backward()
                     optimizer.step()
 
@@ -363,14 +362,13 @@ class TransformerTrainer:
             x = batch[:, :-1].to(self.device)
             y = batch[:, 1:].to(self.device)
 
-            # False for every example that has pad as target.
-            y_mask = mask[:, 1:].to(self.device)
-
             logits: torch.Tensor = self.model.forward(x)
-            packed_logits = logits[y_mask] # Squashes to B*T, C where mask is True.
-            packed_y = y[y_mask] # Squashes to B*T where mask is True.
+            B, T, C = logits.shape
+
+            logits = logits.reshape(B * T, C) # Squashes to B*T, C.
+            y = y.reshape(B * T) # Squashes to B*T.
             
-            loss = torch.nn.functional.cross_entropy(packed_logits, packed_y)
+            loss = torch.nn.functional.cross_entropy(logits, y, ignore_index=0)
             avg_loss += loss.item() / batches
 
         return avg_loss
