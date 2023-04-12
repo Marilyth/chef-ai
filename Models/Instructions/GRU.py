@@ -8,70 +8,63 @@ import time
 
 
 class GRUCell(nn.Module):
-    def __init__(self, state_size: int, input_size: int):
-        """Initializes the LSTM cell with the specified arguments.
-
-        Args:
-            state_size (int): The size of the hidden state. The hidden state is the output of the previous iteration.
-            input_size (int): The size of the input.
-        """
-        super().__init__()
-        self.state_size = state_size
-        self.input_size = input_size
-
-        self.input_transform = nn.Linear(input_size, state_size, bias=False)
-        self.hidden_transform = nn.Linear(state_size, state_size, bias=False)
-        self.norm = nn.LayerNorm(state_size)
-
-    def forward(self, x: torch.Tensor, hidden_state: torch.Tensor):
-        x = self.input_transform(x)
-        hidden = self.hidden_transform(hidden_state)
-        hidden = torch.tanh(self.norm(x + hidden))
-
-        return hidden
-
-
-class GRU(nn.Module):
-    def __init__(self, state_size: int, embedding_dimension: int, vocabulary_size: int, layers: int = 1):
+    def __init__(self, state_size: int, embedding_dimension: int):
         super().__init__()
         self.state_size = state_size
         self.embedding_dimension = embedding_dimension
-        self.vocabulary_size = vocabulary_size
-        self.hidden_states = None
 
+        self.W_z = nn.Linear(state_size + embedding_dimension, state_size)
+        self.W_r = nn.Linear(state_size + embedding_dimension, state_size)
+        self.W_h = nn.Linear(state_size + embedding_dimension, state_size)
+
+    def forward(self, x: torch.Tensor, hidden_state: torch.Tensor):
+        """Performs a forward pass through the GRU cell.
+
+        Args:
+            x (torch.Tensor): The input to the cell.
+            hidden_state (torch.Tensor): The hidden state of the previous cell.
+
+        Returns:
+            torch.Tensor: The hidden state of the current cell.
+        """
+        z = torch.sigmoid(self.W_z(torch.cat((x, hidden_state), dim=1)))
+        r = torch.sigmoid(self.W_r(torch.cat((x, hidden_state), dim=1)))
+        h = torch.tanh(self.W_h(torch.cat((x, r * hidden_state), dim=1)))
+
+        return (1 - z) * hidden_state + z * h
+
+class GRU(nn.Module):
+    def __init__(self, state_size: int, embedding_dimension: int, vocab_size: int, layers: int = 1):
+        super().__init__()
+        self.state_size = state_size
+        self.embedding_dimension = embedding_dimension
         self.layers = layers
-        self.cells = nn.ModuleList([GRUCell(state_size, embedding_dimension) for _ in range(layers)])
-        self.embedding = nn.Embedding(vocabulary_size, embedding_dimension)
-        self.output = nn.Linear(state_size, vocabulary_size)
 
-    def forward(self, x: torch.Tensor, discard_states = True):
-        B, T = x.shape
+        self.embedding = nn.Embedding(vocab_size, embedding_dimension)
+        self.gru_cells = nn.ModuleList([GRUCell(state_size, embedding_dimension) for _ in range(layers)])
 
+    def forward(self, x: torch.Tensor, hidden_state: torch.Tensor):
+        """Performs a forward pass through the GRU.
+
+        Args:
+            x (torch.Tensor): The input to the GRU.
+            hidden_state (torch.Tensor): The hidden state of the previous GRU.
+
+        Returns:
+            torch.Tensor: The hidden state of the current GRU.
+        """
         x = self.embedding(x)
+        for i in range(self.layers):
+            x = self.gru_cells[i](x, hidden_state[i])
 
-        hidden_states = torch.zeros((B, self.state_size), requires_grad=False, device=x.device) if discard_states or self.hidden_states is None else self.hidden_states
-        outputs = torch.zeros((B, T, self.vocabulary_size), requires_grad=False, device=x.device)
-
-        # Walk through the sequence one step at a time, feeding the output of the previous step as input to the next step.
-        for t in range(T):
-            for layer in range(self.layers):
-                hidden_states = self.cells[layer](x[:, t], hidden_states)
-                #hidden_states = hidden_states.detach()
-
-            # Transform last hidden layer to the output of the RNN.
-            outputs[:, t] = self.output(hidden_states)
-
-        # Save the hidden states for the next forward pass.
-        if not discard_states:
-            self.hidden_states = hidden_states
-
-        return outputs
+        return x
     
 class GRUTrainer:
-    def __init__(self, embedding_dimension: int, context_length: int, layers: int = 1):
+    def __init__(self, hidden_size: int, embedding_dimension: int, context_length: int, layers: int = 1):
         """Initializes an GRU model with the specified arguments.
 
         Args:
+            hidden_size (int): The size of the hidden state.
             embedding_dimension (int): The dimension of the embedding.
             context_length (int): The length of the context.
             layers (int, optional): The amount of layers in the model. Defaults to 1.
@@ -80,7 +73,7 @@ class GRUTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.context_length = context_length
 
-        self.model = GRU(500, embedding_dimension, enc.n_vocab + 1, layers) # Additional word for 0 padding.
+        self.model = GRU(hidden_size, embedding_dimension, enc.n_vocab + 1, layers) # Additional word for 0 padding.
         self.model.to(self.device)
 
     def _collate_fn_pad(self, batch):

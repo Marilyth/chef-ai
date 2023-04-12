@@ -96,7 +96,7 @@ class LSTM(nn.Module):
 
         # Create the LSTM cells. The first cell takes the input and the embedding as input. The other cells take the output of the previous cell as input.
         self.cells = nn.ModuleList([LSTMCell(state_size, embedding_dimension)] + [LSTMCell(state_size, state_size) for _ in range(layers - 1)])
-        
+
         self.embedding = nn.Embedding(vocabulary_size, embedding_dimension)
         self.output = nn.Linear(state_size, vocabulary_size)
 
@@ -112,14 +112,13 @@ class LSTM(nn.Module):
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: The hidden states, the cell states and the outputs of the LSTM.
         """
         # Initialize the hidden states and the cell states if they are not given.
-        if hidden_states is None:
+        if hidden_states is None or cell_states is None:
             hidden_states = torch.zeros((x.shape[0], self.state_size), requires_grad=False, device=x.device)
-        if cell_states is None:
             cell_states = torch.zeros((x.shape[0], self.state_size), requires_grad=False, device=x.device)
 
-        # Initialize the hidden states and the cell states for each layer.
-        hidden_states = [hidden_states for _ in range(self.layers)]
-        cell_states = [cell_states for _ in range(self.layers)]
+            # Initialize the hidden states and the cell states for each layer.
+            hidden_states = [hidden_states for _ in range(self.layers)]
+            cell_states = [cell_states for _ in range(self.layers)]
 
         # Initialize the outputs.
         outputs = []
@@ -139,11 +138,14 @@ class LSTM(nn.Module):
             # Append the output of this iteration.
             outputs.append(self.output(hidden_states[-1]))
 
+        # Stack the outputs.
+        outputs = torch.stack(outputs, dim=1)
+
         # Return the hidden states, the cell states and the outputs.
         return outputs, hidden_states, cell_states
     
 class LSTMTrainer:
-    def __init__(self, embedding_dimension: int, context_length: int, layers: int = 1):
+    def __init__(self, hidden_size: int, embedding_dimension: int, context_length: int, layers: int = 1):
         """Initializes an LSTM model with the specified arguments.
 
         Args:
@@ -155,7 +157,7 @@ class LSTMTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.context_length = context_length
 
-        self.model = LSTM(500, embedding_dimension, enc.n_vocab + 1, layers) # Additional word for 0 padding.
+        self.model = LSTM(hidden_size, embedding_dimension, enc.n_vocab + 1, layers) # Additional word for 0 padding.
         self.model.to(self.device)
 
     def _collate_fn_pad(self, batch):
@@ -217,7 +219,7 @@ class LSTMTrainer:
                     # The data was padded to make it loadable. Pack it to ignore padded data.
                     x = batch[:, :-1].to(self.device)
                     y = batch[:, 1:].to(self.device)
-                    logits = self.model.forward(x)
+                    logits, hidden, cell = self.model.forward(x)
 
                     B, T, C = logits.shape
                     y = y.reshape(B*T)
@@ -282,7 +284,7 @@ class LSTMTrainer:
             # The data was padded to make it loadable. Pack it to ignore padded data.
             x = batch[:, :-1].to(self.device)
             y = batch[:, 1:].to(self.device)
-            logits = self.model.forward(x)
+            logits, hidden, cell = self.model.forward(x)
 
             B, T, C = logits.shape
             y = y.reshape(B*T)
@@ -316,14 +318,15 @@ class LSTMTrainer:
             context += recipe_codes
         
         hidden_state = None
+        cell_state = None
         # Fill hidden state with current context.
         for value in context:
-            logits, hidden_state = self.model.forward(torch.tensor([[value]]).to(self.device), hidden_state) if hidden_state is not None else\
+            logits, hidden_state, cell_state = self.model.forward(torch.tensor([[value]]).to(self.device), hidden_state, cell_state) if hidden_state is not None else\
                                       self.model.forward(torch.tensor([[value]]).to(self.device))
 
         while True:
             # Model generated result for every index of context. We only need the last one.
-            logits, hidden_state = self.model.forward(torch.tensor([[context[-1]]]).to(self.device), hidden_state)
+            logits, hidden_state, cell_state = self.model.forward(torch.tensor([[context[-1]]]).to(self.device), hidden_state, cell_state)
             last_logit = logits[0, 0, :]
 
             probs = torch.nn.functional.softmax(last_logit, dim=0)

@@ -88,10 +88,11 @@ class RNN(nn.Module):
         return outputs, hidden_states
     
 class RNNTrainer:
-    def __init__(self, embedding_dimension: int, context_length: int, layers: int = 1):
+    def __init__(self, hidden_size: int, embedding_dimension: int, context_length: int, layers: int = 1):
         """Initializes an RNN model with the specified arguments.
 
         Args:
+            hidden_size (int): The size of the hidden state.
             embedding_dimension (int): The dimension of the embedding.
             context_length (int): The length of the context.
             layers (int, optional): The amount of layers in the model. Defaults to 1.
@@ -100,7 +101,7 @@ class RNNTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.context_length = context_length
 
-        self.model = RNN(500, embedding_dimension, enc.n_vocab + 1, layers) # Additional word for 0 padding.
+        self.model = RNN(hidden_size, embedding_dimension, enc.n_vocab + 1, layers) # Additional word for 0 padding.
         self.model.to(self.device)
 
     def _collate_fn_pad(self, batch):
