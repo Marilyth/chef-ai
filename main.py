@@ -1,5 +1,6 @@
 import Models.Instructions.RNNTorch
 import Models.Instructions.RNN
+import Models.Instructions.LSTMTorch
 import Models.Instructions.LSTM
 import Models.Instructions.Transformer
 import os
@@ -17,7 +18,9 @@ if __name__ == "__main__":
     elif model_type == "RNN":
         model = Models.Instructions.RNN.RNNTrainer(500, 500, 200, 1)
     elif model_type == "LSTM":
-        model = Models.Instructions.LSTM.LSTMTrainer(500, 500, 200, 1)
+        model = Models.Instructions.LSTM.LSTMTrainer(1000, 500, 200, 1)
+    elif model_type == "LSTMTorch":
+        model = Models.Instructions.LSTMTorch.LSTMTrainer(1000, 1000, 200, 1)
 
     if "test" in sys.argv:
         model.load_model()
