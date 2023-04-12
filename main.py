@@ -1,4 +1,6 @@
 import Models.Instructions.RNNTorch
+import Models.Instructions.RNN
+import Models.Instructions.LSTM
 import Models.Instructions.Transformer
 import os
 import sys
@@ -6,14 +8,18 @@ os.add_dll_directory("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.2/b
 
 
 if __name__ == "__main__":
-    model_type = "RNNTorch"
+    model_type = "RNN"
 
     if model_type == "Transformer":
         model = Models.Instructions.Transformer.TransformerTrainer(200, 3, 500, 400, 4, 0.0)
     elif model_type == "RNNTorch":
         model = Models.Instructions.RNNTorch.RNNTrainer(500, 200, 1)
+    elif model_type == "RNN":
+        model = Models.Instructions.RNN.RNNTrainer(500, 200, 1)
+    elif model_type == "LSTM":
+        model = Models.Instructions.LSTM.LSTMTrainer(500, 200, 1)
 
-    if "test" in sys.argv:
+    if True or "test" in sys.argv:
         model.load_model()
         print("Model is ready. Press Enter for a new sample.")
         while True:

@@ -7,9 +7,9 @@ import tqdm
 import time
 
 
-class RNNCell(nn.Module):
+class GRUCell(nn.Module):
     def __init__(self, state_size: int, input_size: int):
-        """Initializes the Recurrent Neural Network cell with the specified arguments.
+        """Initializes the LSTM cell with the specified arguments.
 
         Args:
             state_size (int): The size of the hidden state. The hidden state is the output of the previous iteration.
@@ -31,7 +31,7 @@ class RNNCell(nn.Module):
         return hidden
 
 
-class RNN(nn.Module):
+class GRU(nn.Module):
     def __init__(self, state_size: int, embedding_dimension: int, vocabulary_size: int, layers: int = 1):
         super().__init__()
         self.state_size = state_size
@@ -40,56 +40,36 @@ class RNN(nn.Module):
         self.hidden_states = None
 
         self.layers = layers
-        self.cells = nn.ModuleList([RNNCell(state_size, embedding_dimension)] + [RNNCell(state_size, state_size) for _ in range(layers - 1)])
+        self.cells = nn.ModuleList([GRUCell(state_size, embedding_dimension) for _ in range(layers)])
         self.embedding = nn.Embedding(vocabulary_size, embedding_dimension)
         self.output = nn.Linear(state_size, vocabulary_size)
 
-    def forward(self, x: torch.Tensor, hidden_states: Optional[List[torch.Tensor]] = None) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        """Forward pass of the RNN. This function is called when the model is called.
-        It takes a batch of sequences and returns the output of the RNN. The output is a tensor of shape (B, T, V)
-        where B is the batch size, T is the sequence length and V is the vocabulary size.
+    def forward(self, x: torch.Tensor, discard_states = True):
+        B, T = x.shape
 
-        Args:
-            x (torch.Tensor): The input tensor of shape (B, T) where B is the batch size and T is the sequence length.
-            discard_states (bool, optional): Whether to discard the hidden states after the forward pass. Defaults to True.
+        x = self.embedding(x)
 
-        Returns:
-            Tuple[torch.Tensor, List[torch.Tensor]]: The output of the RNN and the hidden states for each layer.
-        """
-        # Initialize the hidden states if they are not given.
-        if hidden_states is None:
-            hidden_states = torch.zeros((x.shape[0], self.state_size), requires_grad=False, device=x.device)
+        hidden_states = torch.zeros((B, self.state_size), requires_grad=False, device=x.device) if discard_states or self.hidden_states is None else self.hidden_states
+        outputs = torch.zeros((B, T, self.vocabulary_size), requires_grad=False, device=x.device)
 
-            # Initialize the hidden states for each layer.
-            hidden_states = [hidden_states for _ in range(self.layers)]
+        # Walk through the sequence one step at a time, feeding the output of the previous step as input to the next step.
+        for t in range(T):
+            for layer in range(self.layers):
+                hidden_states = self.cells[layer](x[:, t], hidden_states)
+                #hidden_states = hidden_states.detach()
 
-        # Initialize the outputs.
-        outputs = []
+            # Transform last hidden layer to the output of the RNN.
+            outputs[:, t] = self.output(hidden_states)
 
-        # Iterate over the input.
-        for i in range(x.shape[1]):
-            # Get the embedding of the current word.
-            embedding = self.embedding(x[:, i])
+        # Save the hidden states for the next forward pass.
+        if not discard_states:
+            self.hidden_states = hidden_states
 
-            # Iterate over the layers.
-            for j in range(self.layers):
-                # Calculate the hidden state and the cell state of this iteration.
-                hidden_states[j] = self.cells[j](embedding, hidden_states[j])
-                # The embedding of the next layer is the hidden state of this layer.
-                embedding = hidden_states[j]
-
-            # Append the output of this iteration.
-            outputs.append(self.output(hidden_states[-1]))
-        
-        # Stack the outputs.
-        outputs = torch.stack(outputs, dim=1)
-
-        # Return the hidden states, the cell states and the outputs.
-        return outputs, hidden_states
+        return outputs
     
-class RNNTrainer:
+class GRUTrainer:
     def __init__(self, embedding_dimension: int, context_length: int, layers: int = 1):
-        """Initializes an RNN model with the specified arguments.
+        """Initializes an GRU model with the specified arguments.
 
         Args:
             embedding_dimension (int): The dimension of the embedding.
@@ -100,7 +80,7 @@ class RNNTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.context_length = context_length
 
-        self.model = RNN(500, embedding_dimension, enc.n_vocab + 1, layers) # Additional word for 0 padding.
+        self.model = GRU(500, embedding_dimension, enc.n_vocab + 1, layers) # Additional word for 0 padding.
         self.model.to(self.device)
 
     def _collate_fn_pad(self, batch):
@@ -162,7 +142,7 @@ class RNNTrainer:
                     # The data was padded to make it loadable. Pack it to ignore padded data.
                     x = batch[:, :-1].to(self.device)
                     y = batch[:, 1:].to(self.device)
-                    logits, states = self.model.forward(x)
+                    logits = self.model.forward(x)
 
                     B, T, C = logits.shape
                     y = y.reshape(B*T)
@@ -227,7 +207,7 @@ class RNNTrainer:
             # The data was padded to make it loadable. Pack it to ignore padded data.
             x = batch[:, :-1].to(self.device)
             y = batch[:, 1:].to(self.device)
-            logits, states = self.model.forward(x)
+            logits = self.model.forward(x)
 
             B, T, C = logits.shape
             y = y.reshape(B*T)
@@ -300,8 +280,8 @@ class RNNTrainer:
         return recipe_text
 
     def save_model(self):
-        torch.save(self.model.state_dict(), "./Models/Instructions/RNN.pkl")
+        torch.save(self.model.state_dict(), "./Models/Instructions/GRU.pkl")
 
     def load_model(self):
-        state_dict = torch.load("./Models/Instructions/RNN.pkl")
+        state_dict = torch.load("./Models/Instructions/GRU.pkl")
         self.model.load_state_dict(state_dict)
