@@ -74,7 +74,10 @@ class Trainer:
         sampler = torch.utils.data.DataLoader(self.train_set, batch_size, shuffle=True, generator=self.generator, collate_fn=self._collate_fn_pad)
 
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3)
+        # Reduce the learning rate if the loss does not decrease for some iterations.
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, verbose=True)
         losses = [[],[]]
+        sliding_training_loss = []
 
         epoch = 1
         iteration = 0
@@ -100,11 +103,23 @@ class Trainer:
                     logits = logits.reshape(B*T, C)
                     loss = torch.nn.functional.cross_entropy(logits, y, ignore_index=0) # Only compute loss on non-padded outputs.
 
+                    # Compute the average loss over the last 100 iterations. This is used to determine when to decrease the learning rate.
+                    sliding_training_loss.append(loss.detach().cpu().item())
+                    if len(sliding_training_loss) > 100:
+                        sliding_training_loss.pop(0)
+
                     optimizer.zero_grad()
                     loss.backward()
+
+                    # Update the model weights.
                     optimizer.step()
 
                     iteration += 1
+
+                    # If necessary, decrease the learning rate if the loss does not decrease for 100 iterations.
+                    if iteration % 100 == 0:
+                        avg_training_loss = sum(sliding_training_loss) / len(sliding_training_loss)
+                        scheduler.step(avg_training_loss)
 
                     if iteration == max_iterations or (max_time > 0 and time.time() > end_time):
                         epoch = max_epochs
@@ -112,8 +127,10 @@ class Trainer:
                     
                     # Show current performance every once in a while.
                     if iteration % progress_report == 0:
-                        print(f"Training loss of current epoch: {self.test(test_set=self.train_set[:100], batch_size=batch_size)}")
-                        print(f"Validation loss of current epoch: {self.test(test_set=self.valid_set[:100], batch_size=batch_size)}")
+                        train_loss = self.test(test_set=self.train_set[:100], batch_size=batch_size)
+                        valid_loss = self.test(test_set=self.valid_set[:100], batch_size=batch_size)
+                        print(f"Training loss of current epoch: {train_loss}")
+                        print(f"Validation loss of current epoch: {valid_loss}")
                 except KeyboardInterrupt as e:
                     print("Saving model...")
                     self.save_model()
