@@ -4,13 +4,14 @@ import Models.Instructions.LSTMTorch
 import Models.Instructions.LSTM
 import Models.Instructions.Transformer
 import Models.Instructions.GRU
+import Models.Instructions.GRUTorch
 import os
 import sys
 os.add_dll_directory("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.2/bin")
 
 
 if __name__ == "__main__":
-    model_type = "GRU"
+    model_type = "GRUTorch"
 
     if model_type == "Transformer":
         model = Models.Instructions.Transformer.TransformerTrainer(200, 3, 500, 400, 4, 0.0)
@@ -24,6 +25,8 @@ if __name__ == "__main__":
         model = Models.Instructions.LSTMTorch.LSTMTrainer(1000, 1000, 200, 1)
     elif model_type == "GRU":
         model = Models.Instructions.GRU.GRUTrainer(1000, 500, 200, 1)
+    elif model_type == "GRUTorch":
+        model = Models.Instructions.GRUTorch.GRUTrainer(1000, 1000, 200, 1)
 
     if "test" in sys.argv:
         model.load_model()
