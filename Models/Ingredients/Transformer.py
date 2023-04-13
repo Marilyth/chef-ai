@@ -132,7 +132,7 @@ class TransformerTrainer:
         self.context_length = context_length
 
         self._prepare()
-        self.model = Transformer(context_length, blocks, neurons, embedding_dimension, heads, dropout, len(ingredient_to_code))
+        self.model = Transformer(context_length, blocks, neurons, embedding_dimension, heads, dropout, len(word_to_code))
 
         if torch.cuda.is_available():
             self.model.cuda()
@@ -141,7 +141,7 @@ class TransformerTrainer:
         """Builds the model, fetches the data and splits it.
         """
         # Prepare data.
-        ingredients = encode_ingredient_lists(get_ingredient_lists()[:5000])
+        ingredients = encode_text_lists(get_text_lists()[:5000])
         data = torch.tensor(create_ngram(ingredients, self.context_length + 1))
         train_length = int(0.8 * len(data))
         valid_length = int(0.1 * len(data))
@@ -275,7 +275,7 @@ class TransformerTrainer:
             context = context[1:] + [ingredient_code]
             ingredients.append(ingredient_code)
         
-        return [code_to_ingredient[i] for i in ingredients]
+        return [code_to_word[i] for i in ingredients]
 
     def save_model(self):
         torch.save(self.model.state_dict(), "./Models/Ingredients/Transformer.pkl")

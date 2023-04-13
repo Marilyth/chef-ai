@@ -33,7 +33,7 @@ class MLP:
         """Builds the model, fetches the data and splits it.
         """
         # Prepare data.
-        ingredients = encode_ingredient_lists(get_ingredient_lists())
+        ingredients = encode_text_lists(get_text_lists())
         data = torch.tensor(create_ngram(ingredients, self.context_length + 1))
         train_length = int(0.8 * len(data))
         valid_length = int(0.1 * len(data))
@@ -43,7 +43,7 @@ class MLP:
         self.train_set, self.valid_set, self.test_set = train_set.dataset[train_set.indices], valid_set.dataset[valid_set.indices], test_set.dataset[test_set.indices]
 
         # Create layers.
-        self.model.add_module("embed", nn.Embedding(len(ingredient_to_code), self.embedding_dimension))
+        self.model.add_module("embed", nn.Embedding(len(word_to_code), self.embedding_dimension))
         self.model.add_module("flatten", nn.Flatten())
 
         self.model.add_module("linear_in", nn.Linear(self.context_length * self.embedding_dimension, self.neurons, bias=False))
@@ -55,7 +55,7 @@ class MLP:
             self.model.add_module(f"hidden_batch_{i}", nn.BatchNorm1d(self.neurons))
             self.model.add_module(f"hidden_activation_{i}", nn.ReLU())
         
-        self.model.add_module("linear_out", nn.Linear(self.neurons, len(ingredient_to_code)))
+        self.model.add_module("linear_out", nn.Linear(self.neurons, len(word_to_code)))
 
     def train(self, max_epochs: int = 20, batch_size: int = 4096) -> List[List[float]]:
         """Trains the model for as long as the validation loss decreases.
@@ -170,7 +170,7 @@ class MLP:
             context = context[1:] + [ingredient_code]
             ingredients.append(ingredient_code)
         
-        return [code_to_ingredient[i] for i in ingredients]
+        return [code_to_word[i] for i in ingredients]
 
     def save_model(self):
         torch.save(self.model.state_dict(), "./Models/Ingredients/MLP.pkl")

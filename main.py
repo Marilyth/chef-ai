@@ -5,36 +5,40 @@ import Models.Instructions.LSTM
 import Models.Instructions.Transformer
 import Models.Instructions.GRU
 import Models.Instructions.GRUTorch
+import Models.Trainer
+from Data import data
 import os
 import sys
 os.add_dll_directory("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.2/bin")
 
 
 if __name__ == "__main__":
-    model_type = "GRUTorch"
+    model_type = input("Please choose a model type (Transformer, RNNTorch, RNN, LSTMTorch, LSTM, GRUTorch, GRU): ")
 
     if model_type == "Transformer":
-        model = Models.Instructions.Transformer.TransformerTrainer(200, 3, 500, 400, 4, 0.0)
+        trainer = Models.Trainer.Trainer(Models.Instructions.Transformer.Transformer(200, 3, 500, 400, 4, 0.0, data.enc.n_vocab + 1), context_length=200)
     elif model_type == "RNNTorch":
-        model = Models.Instructions.RNNTorch.RNNTrainer(500, 500, 200, 1)
+        trainer = Models.Trainer.Trainer(Models.Instructions.RNNTorch.RNNTorch(500, 500, data.enc.n_vocab + 1, 1))
     elif model_type == "RNN":
-        model = Models.Instructions.RNN.RNNTrainer(500, 500, 200, 1)
+        trainer = Models.Trainer.Trainer(Models.Instructions.RNN.RNN(500, 500, data.enc.n_vocab + 1, 1))
     elif model_type == "LSTM":
-        model = Models.Instructions.LSTM.LSTMTrainer(1000, 500, 200, 1)
+        trainer = Models.Trainer.Trainer(Models.Instructions.LSTM.LSTM(1000, 500, data.enc.n_vocab + 1, 1))
     elif model_type == "LSTMTorch":
-        model = Models.Instructions.LSTMTorch.LSTMTrainer(1000, 1000, 200, 1)
+        trainer = Models.Trainer.Trainer(Models.Instructions.LSTMTorch.LSTMTorch(1000, 1000, data.enc.n_vocab + 1, 1))
     elif model_type == "GRU":
-        model = Models.Instructions.GRU.GRUTrainer(1000, 500, 200, 1)
+        trainer = Models.Trainer.Trainer(Models.Instructions.GRU.GRU(1000, 500, data.enc.n_vocab + 1, 1))
     elif model_type == "GRUTorch":
-        model = Models.Instructions.GRUTorch.GRUTrainer(1000, 1000, 200, 1)
+        trainer = Models.Trainer.Trainer(Models.Instructions.GRUTorch.GRUTorch(1000, 1000, data.enc.n_vocab + 1, 1))
 
-    if "test" in sys.argv:
-        model.load_model()
+    mode = input("Please choose a mode (train, test): ")
+    if mode == "test":
+        trainer.load_model()
         print("Model is ready. Press Enter for a new sample.")
         while True:
-            ingredients = input("If you want, you can provide a comma seperated list of ingredients now: ")
+            ingredients = input("If you want, you can provide a beginning for the text generation now: ")
 
-            model.generate_recipe(ingredients)
+            trainer.generate_text(ingredients)
     else:
-        print(model.train())
-        model.save_model()
+        trainer.load_data("PoetryFoundationData.csv", context_length=200)
+        print(trainer.train())
+        trainer.save_model()

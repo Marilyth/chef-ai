@@ -8,6 +8,7 @@ import csv
 import requests
 from tqdm import tqdm
 import tiktoken
+import torch
 
 
 class Instruction:
@@ -113,27 +114,27 @@ def crawl_food_com(start_index: int = 0, recipes_to_retrieve: int = -1):
 
 
 
-def _download_recipes():
+def _download_dataset(name="shuyangli94/food-com-recipes-and-user-interactions", file_name="RAW_recipes.csv"):
     """Downloads and extracts the food.com recipe dataset, if not already present.
 
     Returns:
         bool: Whether the data is now available or not.
     """
-    if not os.path.exists("./Data/RAW_recipes.csv"):
+    if not os.path.exists(f"./Data/{file_name}"):
         try:
             print("Downloading dataset...", end="")
             import kaggle
             
-            if not os.path.exists("RAW_recipes.csv.zip"):
+            if not os.path.exists(file_name):
                 # Download dataset.
-                kaggle.api.dataset_download_file('shuyangli94/food-com-recipes-and-user-interactions', "RAW_recipes.csv", path='./')
+                kaggle.api.dataset_download_file(name, file_name, path='./')
 
                 print(" Done")
 
             print("Extracting dataset...", end="")
 
-            shutil.unpack_archive("RAW_recipes.csv.zip", "./Data")
-            os.remove("RAW_recipes.csv.zip")
+            shutil.unpack_archive(file_name + ".zip", "./Data")
+            os.remove(file_name + ".zip")
 
             print(" Done")
         except Exception as e:
@@ -142,13 +143,13 @@ def _download_recipes():
             else:
                 print(e)
     
-    if not os.path.exists("./Data/RAW_recipes.csv"):
+    if not os.path.exists(f"./Data/{file_name}"):
         exit(1)
 
 
 #_download_recipes()
-ingredient_to_code: Dict[str, int] = {".": 0}
-code_to_ingredient: Dict[int, str] = {0: "."}
+word_to_code: Dict[str, int] = {".": 0}
+code_to_word: Dict[int, str] = {0: "."}
 gpt_encoder = tiktoken.get_encoding("gpt2")
 enc = tiktoken.Encoding(name="gpt2_recipe", 
                         pat_str=gpt_encoder._pat_str,
@@ -160,7 +161,7 @@ enc = tiktoken.Encoding(name="gpt2_recipe",
                             "<|padding|>": 50259,
                         })
 
-def get_ingredient_lists() -> List[List[str]]:
+def get_text_lists() -> List[List[str]]:
     """Returns all recipe's ingredients.
 
     Returns:
@@ -200,37 +201,43 @@ def get_ingredient_lists() -> List[List[str]]:
             ingredient_set.add(ingredient)
 
     for i, ingredient in enumerate(sorted(list(ingredient_set))):
-        ingredient_to_code[ingredient] = i + 1
-        code_to_ingredient[i + 1] = ingredient
+        word_to_code[ingredient] = i + 1
+        code_to_word[i + 1] = ingredient
 
     return ingredient_lists
 
 
-def get_recipes() -> List[str]:
+def get_texts(file_name: str = "RAW_recipes.csv") -> List[str]:
     """Returns a list of string, each containing a full recipe.
     """
-    data_frame = pandas.read_csv("./Data/RAW_recipes.csv")
-    ingredient_lists = data_frame["ingredients"].to_list()
-    instruction_lists = data_frame["steps"].to_list()
-    recipes = []
+    texts = []
 
-    for ingredients, instructions in zip(ingredient_lists, instruction_lists):
-        recipe = ingredients.replace("['", "").replace("']", "").replace("', '", ", ").replace("', \"", ", ").replace("\", '", ", ").replace("\", \"", ", ") + "<|ingredients_end|>"
-        recipe += instructions.replace("['", "").replace("']", "").replace("', '", "<|next_step|>").replace("', \"", "<|next_step|>").replace("\", '", "<|next_step|>").replace("\", \"", "<|next_step|>") + "<|endoftext|>"
-        recipes.append(recipe)
+    data_frame = pandas.read_csv(f"./Data/{file_name}")
+    if file_name == "RAW_recipes.csv":
+        ingredient_lists = data_frame["ingredients"].to_list()
+        instruction_lists = data_frame["steps"].to_list()
 
-    return recipes
+        for ingredients, instructions in zip(ingredient_lists, instruction_lists):
+            recipe = ingredients.replace("['", "").replace("']", "").replace("', '", ", ").replace("', \"", ", ").replace("\", '", ", ").replace("\", \"", ", ") + "<|ingredients_end|>"
+            recipe += instructions.replace("['", "").replace("']", "").replace("', '", "<|next_step|>").replace("', \"", "<|next_step|>").replace("\", '", "<|next_step|>").replace("\", \"", "<|next_step|>") + "<|endoftext|>"
+            texts.append(recipe)
+    elif file_name == "PoetryFoundationData.csv":
+        texts: List[str] = data_frame["Poem"].to_list()
+        for i in range(len(texts)):
+            texts[i] = texts[i].strip().replace("\r\r\n", "<|next_step|>") + "<|endoftext|>"
+
+    return texts
 
 
-def encode_recipes(recipes: List[str]) -> List[List[int]]:
+def encode_texts(recipes: List[str]) -> List[List[int]]:
     return enc.encode_batch(recipes, allowed_special="all")
 
 
-def decode_recipes(recipes: List[List[int]]) -> List[str]:
+def decode_texts(recipes: List[List[int]]) -> List[str]:
     return [enc.decode(recipe) for recipe in recipes]
 
 
-def encode_ingredient_lists(ingredient_lists: List[List[str]]) -> List[List[int]]:
+def encode_text_lists(ingredient_lists: List[List[str]]) -> List[List[int]]:
     """Creates an encoded ingredient list, equivalent to the passed one.
 
     Args:
@@ -244,12 +251,12 @@ def encode_ingredient_lists(ingredient_lists: List[List[str]]) -> List[List[int]
     for ingredient_list in ingredient_lists:
         encoded_ingredient_lists.append([])
         for ingredient in ingredient_list:
-            encoded_ingredient_lists[-1].append(ingredient_to_code[ingredient])
+            encoded_ingredient_lists[-1].append(word_to_code[ingredient])
 
     return encoded_ingredient_lists
 
 
-def get_ingredient_counts(ingredient_lists: List[List[Any]]) -> List[Tuple[Any, int]]:
+def get_word_counts(ingredient_lists: List[List[Any]]) -> List[Tuple[Any, int]]:
     counts_dict: Dict[Any, int] = {}
     flat_list: List[Any] = [item for sublist in ingredient_lists for item in sublist]
 
