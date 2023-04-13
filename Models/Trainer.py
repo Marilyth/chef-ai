@@ -230,7 +230,7 @@ class Trainer:
                 logits = logits[0]
 
             # Take the last logit, which is the one for the last token.
-            last_logit = logits[:, -1, :]
+            last_logit = logits[-1, -1, :]
 
             # Sample from the logits. This is the next token.
             probs = torch.nn.functional.softmax(last_logit, dim=0)
