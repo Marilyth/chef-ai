@@ -33,6 +33,10 @@ if __name__ == "__main__":
     mode = input("Please choose a mode (train, test): ")
     if mode == "test":
         trainer.load_model()
+        print(f"Evaluating test error...")
+        trainer.load_data("PoetryFoundationData.csv", context_length=200)
+        print(f"Test loss is {trainer.test(trainer.test_set[:100], show_progress=True)}")
+
         print("Model is ready. Press Enter for a new sample.")
         while True:
             ingredients = input("If you want, you can provide a beginning for the text generation now: ")

@@ -207,12 +207,25 @@ def get_text_lists() -> List[List[str]]:
     return ingredient_lists
 
 
-def get_texts(file_name: str = "RAW_recipes.csv") -> List[str]:
-    """Returns a list of string, each containing a full recipe.
+def get_texts(file_name: str = "RAW_recipes.csv", sample_size: Optional[int] = None, random_seed: Optional[int] = None) -> List[str]:
+    """Returns a list of all elements in the dataset of the file.
+
+    Args:
+        file_name (str, optional): The name of the file to read from. Defaults to "RAW_recipes.csv".
+        sample_size (Optional[int], optional): The number of elements to sample. Defaults to None.
+        random_seed (Optional[int], optional): The random seed to use. Defaults to None. If None, the sample is not random.
+    Returns:
+        List[str]: The list of elements.
     """
     texts = []
 
     data_frame = pandas.read_csv(f"./Data/{file_name}")
+    if sample_size:
+        if random_seed:
+            data_frame = data_frame.sample(sample_size, random_state=random_seed)
+        else:
+            data_frame = data_frame.sample(sample_size)
+
     if file_name == "RAW_recipes.csv":
         ingredient_lists = data_frame["ingredients"].to_list()
         instruction_lists = data_frame["steps"].to_list()

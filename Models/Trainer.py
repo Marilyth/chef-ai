@@ -43,7 +43,7 @@ class Trainer:
             context_length = self.context_length
 
         # Prepare data.
-        texts = encode_texts(get_texts(file_name)[:size])
+        texts = encode_texts(get_texts(file_name, size, 42))
 
         # This data is of variable length. It needs to be packed before forward pass.
         data = [torch.tensor(datapoint) for datapoint in create_sliding(texts, context_length + 1, 50259)]
@@ -77,7 +77,6 @@ class Trainer:
         # Reduce the learning rate if the loss does not decrease for some iterations.
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, verbose=True)
         losses = [[],[]]
-        sliding_training_loss = []
 
         epoch = 1
         iteration = 0
@@ -103,11 +102,6 @@ class Trainer:
                     logits = logits.reshape(B*T, C)
                     loss = torch.nn.functional.cross_entropy(logits, y, ignore_index=0) # Only compute loss on non-padded outputs.
 
-                    # Compute the average loss over the last 100 iterations. This is used to determine when to decrease the learning rate.
-                    sliding_training_loss.append(loss.detach().cpu().item())
-                    if len(sliding_training_loss) > 100:
-                        sliding_training_loss.pop(0)
-
                     optimizer.zero_grad()
                     loss.backward()
 
@@ -116,10 +110,10 @@ class Trainer:
 
                     iteration += 1
 
-                    # If necessary, decrease the learning rate if the loss does not decrease for 100 iterations.
+                    # If necessary, decrease the learning rate if the loss does not decrease every 100 iterations.
                     if iteration % 100 == 0:
-                        avg_training_loss = sum(sliding_training_loss) / len(sliding_training_loss)
-                        scheduler.step(avg_training_loss)
+                        valid_loss = self.test(test_set=self.valid_set[:100], batch_size=batch_size)
+                        scheduler.step(valid_loss)
 
                     if iteration == max_iterations or (max_time > 0 and time.time() > end_time):
                         epoch = max_epochs
@@ -155,12 +149,13 @@ class Trainer:
         return losses
     
     @torch.no_grad()
-    def test(self, test_set: Any, batch_size: int = 16) -> float:
+    def test(self, test_set: Any, batch_size: int = 16, show_progress: bool = False) -> float:
         """Tests the current model on the specified dataset.
 
         Args:
             valid_set (bool, optional): Whether to use the validation set instead of the test set. Defaults to False.
             batch_size (int, optional): The amount of data points to evaluate at once. Defaults to 4096 (fits in roughly 4GB of VRAM).
+            show_progress (bool, optional): Whether to show a progress bar. Defaults to False.
 
         Returns:
             float: The cross entropy loss.
@@ -171,7 +166,7 @@ class Trainer:
         batches = len(sampler)
 
         avg_loss = 0
-        for batch in sampler:
+        for batch in tqdm.tqdm(sampler, total=len(sampler), desc=f"Testing") if show_progress else sampler:
             # The data was padded to make it loadable. Pack it to ignore padded data.
             x = batch[:, :-1].to(self.device)
             y = batch[:, 1:].to(self.device)
@@ -235,7 +230,7 @@ class Trainer:
                 logits = logits[0]
 
             # Take the last logit, which is the one for the last token.
-            last_logit = logits[0, 0, :]
+            last_logit = logits[:, -1, :]
 
             # Sample from the logits. This is the next token.
             probs = torch.nn.functional.softmax(last_logit, dim=0)
@@ -275,7 +270,7 @@ class Trainer:
         if name is None:
             name = type(self.model).__name__
 
-        torch.save(self.model.state_dict(), f"./Models/Instructions/{name}.pkl")
+        torch.save(self.model.state_dict(), f"./Models/{name}.pkl")
 
     def load_model(self, name: str = None):
         """Loads a model from disk. The model must have been saved using save_model.
@@ -286,5 +281,5 @@ class Trainer:
         if name is None:
             name = type(self.model).__name__
 
-        state_dict = torch.load(f"./Models/Instructions/{name}.pkl")
+        state_dict = torch.load(f"./Models/{name}.pkl")
         self.model.load_state_dict(state_dict)
