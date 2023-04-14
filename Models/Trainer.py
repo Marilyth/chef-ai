@@ -75,7 +75,7 @@ class Trainer:
 
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3)
         # Reduce the learning rate if the loss does not decrease for some iterations.
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, verbose=True)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, verbose=True)
         losses = [[],[]]
 
         epoch = 1
@@ -114,10 +114,6 @@ class Trainer:
                     if iteration % 100 == 0:
                         valid_loss = self.test(test_set=self.valid_set[:100], batch_size=batch_size)
                         scheduler.step(valid_loss)
-
-                    if iteration == max_iterations or (max_time > 0 and time.time() > end_time):
-                        epoch = max_epochs
-                        return
                     
                     # Show current performance every once in a while.
                     if iteration % progress_report == 0:
@@ -125,6 +121,10 @@ class Trainer:
                         valid_loss = self.test(test_set=self.valid_set[:100], batch_size=batch_size)
                         print(f"Training loss of current epoch: {train_loss}")
                         print(f"Validation loss of current epoch: {valid_loss}")
+
+                    if iteration == max_iterations or (max_time > 0 and time.time() > end_time):
+                        epoch = max_epochs
+                        return
                 except KeyboardInterrupt as e:
                     print("Saving model...")
                     self.save_model()
@@ -186,13 +186,14 @@ class Trainer:
         return avg_loss
 
     @torch.no_grad()
-    def generate_text(self, beginning: str = None, print_live: bool = True) -> str:
+    def generate_text(self, beginning: str = None, print_live: bool = True, temperature: float = 1.0) -> str:
         """Generates text using the model. If a beginning is specified, the model will continue the text. Otherwise, it will generate a new text.
         The model will generate text until it reaches the end token. This may never happen if the model is not trained well enough.
 
         Args:
             beginning (str, optional): The beginning of the text. Defaults to None.
             print_live (bool, optional): Whether to print the generated text live. Defaults to True.
+            temperature (float, optional): The temperature to use when generating text. Defaults to 1.0. Higher values will result in more random text.
         Returns:
             str: The generated text.
         """
@@ -232,8 +233,8 @@ class Trainer:
             # Take the last logit, which is the one for the last token.
             last_logit = logits[-1, -1, :]
 
-            # Sample from the logits. This is the next token.
-            probs = torch.nn.functional.softmax(last_logit, dim=0)
+            # Sample from the logits. This is the next token. The higher the temperature, the more random the text will be.
+            probs = torch.nn.functional.softmax(last_logit / temperature, dim=0)
             word_code = torch.multinomial(probs, num_samples=1).item()
             
             # Don't add padding.

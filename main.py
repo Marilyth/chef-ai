@@ -16,7 +16,7 @@ if __name__ == "__main__":
     model_type = input("Please choose a model type (Transformer, RNNTorch, RNN, LSTMTorch, LSTM, GRUTorch, GRU): ")
 
     if model_type == "Transformer":
-        trainer = Models.Trainer.Trainer(Models.Instructions.Transformer.Transformer(200, 3, 500, 400, 4, 0.0, data.enc.n_vocab + 1), context_length=200)
+        trainer = Models.Trainer.Trainer(Models.Instructions.Transformer.Transformer(200, 2, 500, 700, 7, 0.0, data.enc.n_vocab + 1), context_length=200)
     elif model_type == "RNNTorch":
         trainer = Models.Trainer.Trainer(Models.Instructions.RNNTorch.RNNTorch(500, 500, data.enc.n_vocab + 1, 1))
     elif model_type == "RNN":
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     if mode == "test":
         trainer.load_model()
         print(f"Evaluating test error...")
-        trainer.load_data("PoetryFoundationData.csv", context_length=200)
+        trainer.load_data("PoetryFoundationData.csv", context_length=200, size=1000)
         print(f"Test loss is {trainer.test(trainer.test_set[:100], show_progress=True)}")
 
         print("Model is ready. Press Enter for a new sample.")
@@ -43,6 +43,6 @@ if __name__ == "__main__":
 
             trainer.generate_text(ingredients)
     else:
-        trainer.load_data("PoetryFoundationData.csv", context_length=200)
+        trainer.load_data("PoetryFoundationData.csv", context_length=200, size=10000)
         print(trainer.train())
         trainer.save_model()
