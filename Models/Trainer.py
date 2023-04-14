@@ -186,7 +186,7 @@ class Trainer:
         return avg_loss
 
     @torch.no_grad()
-    def generate_text(self, beginning: str = None, print_live: bool = True, temperature: float = 1.0) -> str:
+    def generate_text(self, beginning: str = None, print_live: bool = True, temperature: float = 1.0, top_k: int = -1, top_p: float = 1.0) -> str:
         """Generates text using the model. If a beginning is specified, the model will continue the text. Otherwise, it will generate a new text.
         The model will generate text until it reaches the end token. This may never happen if the model is not trained well enough.
 
@@ -194,6 +194,8 @@ class Trainer:
             beginning (str, optional): The beginning of the text. Defaults to None.
             print_live (bool, optional): Whether to print the generated text live. Defaults to True.
             temperature (float, optional): The temperature to use when generating text. Defaults to 1.0. Higher values will result in more random text.
+            top_k (int, optional): The amount of top k words to use when generating text. Defaults to -1. This will use all words.
+            top_p (float, optional): The probability to use when generating text. Defaults to 1.0. Higher values will result in more random text.
         Returns:
             str: The generated text.
         """
@@ -222,42 +224,75 @@ class Trainer:
                     break
 
         while True:
-            # Model generated result for every index of context. We only need the last one.
-            logits = self.model.forward(torch.tensor([context]).to(self.device), *states)
+            try:
+                # Model generated result for every index of context. We only need the last one.
+                logits = self.model.forward(torch.tensor([context]).to(self.device), *states)
 
-            # If the model returns a list, take the first element. Those are the logits. The rest are states for the next iteration.
-            if type(logits) is list or type(logits) is tuple:
-                states = logits[1:]
-                logits = logits[0]
+                # If the model returns a list, take the first element. Those are the logits. The rest are states for the next iteration.
+                if type(logits) is list or type(logits) is tuple:
+                    states = logits[1:]
+                    logits = logits[0]
 
-            # Take the last logit, which is the one for the last token.
-            last_logit = logits[-1, -1, :]
+                # Take the last logit, which is the one for the last token.
+                last_logit = logits[-1, -1, :]
 
-            # Sample from the logits. This is the next token. The higher the temperature, the more random the text will be.
-            probs = torch.nn.functional.softmax(last_logit / temperature, dim=0)
-            word_code = torch.multinomial(probs, num_samples=1).item()
-            
-            # Don't add padding.
-            if word_code == 50259:
-                continue
-            
-            context.append(word_code)
-            if len(context) > self.context_length:
-                context = context[1:]
+                # Sample from the logits. This is the next token. The higher the temperature, the more random the text will be.
+                probs = torch.nn.functional.softmax(last_logit / temperature, dim=0)
+
+                # Take the top k words. This will set all other words to 0.
+                if top_k > 0:
+                    top_k = min(top_k, probs.size(-1))
+                    top_k_probs, top_k_indices = torch.topk(probs, top_k)
+                    probs = torch.zeros_like(probs).scatter_(0, top_k_indices, top_k_probs)
+                    probs = probs / torch.sum(probs)
+
+                # Take the top p words.
+                if top_p < 1.0:
+                    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+                    cumulative_probs = torch.cumsum(sorted_probs, dim=0)
+                    cumulative_mask = cumulative_probs > top_p
+
+                    # Shift the mask to the right to keep the first token above the threshold.
+                    cumulative_mask[..., 1:] = cumulative_mask[..., :-1].clone()
+                    # Set the first token to False, because it should always be included.
+                    cumulative_mask[0] = False
+
+                    sorted_probs = sorted_probs.masked_fill(cumulative_mask, 0.0)
+
+                    # If all probabilities are 0, set the first one to 1.0.
+                    if sorted_probs[0] == 0.0:
+                        sorted_probs[0] = 1.0
+
+                    probs = torch.zeros_like(probs).scatter_(0, sorted_indices, sorted_probs)
+                    probs = probs / torch.sum(probs)
+
+                word_code = torch.multinomial(probs, num_samples=1).item()
                 
-            word_codes.append(word_code)
+                # Don't add padding.
+                if word_code == 50259:
+                    continue
+                
+                context.append(word_code)
+                if len(context) > self.context_length:
+                    context = context[1:]
+                    
+                word_codes.append(word_code)
 
-            # Make text look nicer.
-            next_text = enc.decode([word_code]).replace("<|padding|>", "")\
-                                                 .replace("<|next_step|>", "\n\n")\
-                                                 .replace("<|ingredients_end|>", "\n\nInstructions:\n")\
-                                                 .replace("<|endoftext|>", "\n\n")
-            if print_live:
-                print(next_text, end="")
-            generated_text += next_text
+                # Make text look nicer.
+                next_text = enc.decode([word_code]).replace("<|padding|>", "")\
+                                                    .replace("<|next_step|>", "\n\n")\
+                                                    .replace("<|ingredients_end|>", "\n\nInstructions:\n")\
+                                                    .replace("<|endoftext|>", "\n\n")
+                if print_live:
+                    print(next_text, end="")
+                generated_text += next_text
 
-            # End of text token reached. Stop.
-            if word_code == 50256:
+                # End of text token reached. Stop.
+                if word_code == 50256:
+                    break
+            except KeyboardInterrupt as e:
+                # Stop on keyboard interrupt.
+                print()
                 break
         
         return generated_text
