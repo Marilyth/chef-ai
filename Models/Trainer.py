@@ -222,6 +222,10 @@ class Trainer:
                     states = logits[1:]
                 else:
                     break
+        
+        # Limit context to the specified length.
+        if len(context) > self.context_length:
+            context = context[-self.context_length:]
 
         while True:
             try:
@@ -238,6 +242,12 @@ class Trainer:
 
                 # Sample from the logits. This is the next token. The higher the temperature, the more random the text will be.
                 probs = torch.nn.functional.softmax(last_logit / temperature, dim=0)
+
+                # If the last token was a space or <|next_step|>, we don't want to generate one again.
+                if context[-1] == 220 or context[-1] == 50258:
+                    probs[220] = 0
+                    probs[50258] = 0
+                    probs = probs / torch.sum(probs)
 
                 # Take the top k words. This will set all other words to 0.
                 if top_k > 0:
@@ -280,9 +290,10 @@ class Trainer:
 
                 # Make text look nicer.
                 next_text = enc.decode([word_code]).replace("<|padding|>", "")\
-                                                    .replace("<|next_step|>", "\n\n")\
                                                     .replace("<|ingredients_end|>", "\n\nInstructions:\n")\
-                                                    .replace("<|endoftext|>", "\n\n")
+                                                    .replace("<|endoftext|>", "\n\n")\
+                                                    .replace("<|next_step|>", "\n")
+                
                 if print_live:
                     print(next_text, end="")
                 generated_text += next_text
