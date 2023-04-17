@@ -239,8 +239,6 @@ def get_texts(file_name: str = "RAW_recipes.csv", sample_size: Optional[int] = N
         texts: List[str] = data_frame["Poem"].to_list()
         for i in range(len(texts)):
             texts[i] = texts[i].strip().replace("\r\r\n", "<|next_step|>") + "<|endoftext|>"
-            # Remove multiple spaces and replace them with a single one.
-            texts[i] = re.sub("\s\s+", " ", texts[i])
 
     return texts
 
