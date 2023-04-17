@@ -7,10 +7,8 @@ import Models.Instructions.GRU
 import Models.Instructions.GRUTorch
 import Models.Trainer
 from Data import data
-import os
-import sys
-os.add_dll_directory("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.2/bin")
 
+# Installing pytorch with CUDA is weird, check https://pytorch.org/ for instructions.
 
 if __name__ == "__main__":
     model_type = input("Please choose a model type (Transformer, RNNTorch, RNN, LSTMTorch, LSTM, GRUTorch, GRU): ")
@@ -53,6 +51,6 @@ if __name__ == "__main__":
 
             trainer.generate_text(ingredients, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p))
     else:
-        trainer.load_data("PoetryFoundationData.csv", context_length=200, size=10000)
+        trainer.load_data("PoetryFoundationData.csv", context_length=200, size=1000)
         print(trainer.train())
         trainer.save_model()
