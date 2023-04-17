@@ -57,7 +57,7 @@ class Trainer:
                                                         [valid_set.dataset[i] for i in valid_set.indices],\
                                                         [test_set.dataset[i] for i in test_set.indices]
 
-    def train(self, max_epochs: int = 20, max_time: int = -1, max_iterations: int = -1, batch_size: int = 8, progress_report: int = 100) -> List[List[float]]:
+    def train(self, max_epochs: int = 20, max_time: int = -1, max_iterations: int = -1, batch_size: int = 8, progress_report: int = 100, use_half: bool = False) -> List[List[float]]:
         """Trains the model for as long as the validation loss decreases.
 
         Args:
@@ -73,7 +73,12 @@ class Trainer:
 
         sampler = torch.utils.data.DataLoader(self.train_set, batch_size, shuffle=True, generator=self.generator, collate_fn=self._collate_fn_pad)
 
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3)
+        if use_half:
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3, eps=1e-4)
+            self.model = self.model.half()
+        else:
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3)
+            
         # Reduce the learning rate if the loss does not decrease for some iterations.
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, verbose=True)
         losses = [[],[]]
