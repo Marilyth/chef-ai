@@ -7,15 +7,17 @@ import Models.Instructions.GRU
 import Models.Instructions.GRUTorch
 import Models.Trainer
 from Data import data
+import torch
 
 # Installing pytorch with CUDA is weird, check https://pytorch.org/ for instructions.
 
 if __name__ == "__main__":
     model_type = input("Please choose a model type (Transformer, RNNTorch, RNN, LSTMTorch, LSTM, GRUTorch, GRU): ")
     context_length = 320
+    torch.manual_seed(42)
 
     if model_type == "Transformer":
-        trainer = Models.Trainer.Trainer(Models.Instructions.Transformer.Transformer(context_length, 2, 700, 7, 0.0, data.enc.n_vocab + 1), context_length=context_length)
+        trainer = Models.Trainer.Trainer(Models.Instructions.Transformer.Transformer(context_length, 2, 500, 700, 7, 0.0, data.enc.n_vocab + 1), context_length=context_length)
     elif model_type == "RNNTorch":
         trainer = Models.Trainer.Trainer(Models.Instructions.RNNTorch.RNNTorch(500, 500, data.enc.n_vocab + 1, 1))
     elif model_type == "RNN":
@@ -31,7 +33,6 @@ if __name__ == "__main__":
 
     mode = input("Please choose a mode (train, test): ")
     if mode == "test":
-        trainer.load_model()
         print(f"Evaluating test error...")
         trainer.load_data("PoetryFoundationData.csv", context_length=context_length, size=1000)
         print(f"Test loss is {trainer.test(trainer.test_set[:100], show_progress=True)}")
@@ -52,6 +53,6 @@ if __name__ == "__main__":
 
             trainer.generate_text(ingredients, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p))
     else:
-        trainer.load_data("PoetryFoundationData.csv", context_length=context_length, size=1000)
+        trainer.load_data("PoetryFoundationData.csv", context_length=context_length, size=10000)
         print(trainer.train())
-        trainer.save_model()
+        trainer.save_checkpoint()

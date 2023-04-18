@@ -134,7 +134,7 @@ class DecoderBlock(nn.Module):
     Layernorm is used to normalize the output of the attention layer and the feed forward layer because it improves the training process.
     """
     
-    def __init__(self, embedding_dimension: int, heads: int, dropout: float):
+    def __init__(self, neurons: int, embedding_dimension: int, heads: int, dropout: float):
         """Initializes a decoder block with the specified arguments.
 
         Args:
@@ -147,7 +147,7 @@ class DecoderBlock(nn.Module):
         
         # Multi headed attention layer. The embedding dimension is divided by the amount of heads to ensure that the concatenated heads have the same dimension as the embedding dimension.
         self.attention = MultiHeadedAttention(heads, embedding_dimension // heads, embedding_dimension, dropout)
-        self.feed_forward = FeedForward(embedding_dimension, embedding_dimension, dropout)
+        self.feed_forward = FeedForward(embedding_dimension, neurons, dropout)
         self.attention_layernorm = nn.LayerNorm(embedding_dimension)
         self.feed_forward_layernorm = nn.LayerNorm(embedding_dimension)
 
@@ -171,13 +171,14 @@ class Transformer(nn.Module):
     The embedding layer is used to learn the representation of the words. The positional encoding layer is used to learn the position of the words.
     The decoder blocks are used to learn the relationships between the words. The linear layer is used to predict the next word.
     """
-    def __init__(self, context_length: int, blocks: int, embedding_dimension: int, heads: int, dropout: float, vocabulary_size: int):
+    def __init__(self, context_length: int, blocks: int, neurons: int, embedding_dimension: int, heads: int, dropout: float, vocabulary_size: int):
         """Initializes a multi layer perception model with the specified arguments.
 
         Args:
             context_length (int): The length of the context. This is the amount of words that are used to predict the next word.
             blocks (int): The amount of decoder blocks.
             embedding_dimension (int): The dimension of the embedding layer.
+            neurons (int): The amount of neurons within the feed forward layer.
             heads (int): The amount of heads.
             dropout (float): The dropout factor for regularization.
             vocabulary_size (int): The size of the vocabulary.
@@ -188,6 +189,7 @@ class Transformer(nn.Module):
         self.blocks = blocks
         self.heads = heads
         self.dropout = dropout
+        self.neurons = neurons
         self.positional_encoding = nn.Embedding(self.context_length, self.embedding_dimension)
         self.model = nn.Sequential()
         self.embedding = nn.Embedding(vocabulary_size, self.embedding_dimension)
@@ -195,7 +197,7 @@ class Transformer(nn.Module):
 
         # Add the decoder blocks to the model.
         for i in range(self.blocks):
-            self.model.add_module(f"decoderblock_{i}", DecoderBlock(self.embedding_dimension, self.heads, self.dropout))
+            self.model.add_module(f"decoderblock_{i}", DecoderBlock(self.neurons, self.embedding_dimension, self.heads, self.dropout))
         
         # Add normalization and linear layer to the model. The linear layer is used to predict the next word.
         self.model.add_module(f"layer_norm_out", nn.LayerNorm(self.embedding_dimension))

@@ -6,20 +6,26 @@ from Data.data import *
 import tqdm
 import time
 
-
+torch.manual_seed(42)
 class Trainer:
-    def __init__(self, model: nn.Module, context_length: int = 1):
+    def __init__(self, model: nn.Module, context_length: int = 1, load_checkpoint: bool = True):
         """Initializes a trainer for the specified model.
 
         Args:
             model (nn.Module): The model to train.
             context_length (int): The context length the predict the next word with during generation. For RNN models this is 1.
         """
-        self.generator = torch.Generator().manual_seed(42)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.context_length = context_length
 
         self.model = model
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3)
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=4, verbose=True)
+
+        # Load checkpoint if it exists.
+        if load_checkpoint:
+            self.load_checkpoint()
+
         self.model.to(self.device)
 
     def _collate_fn_pad(self, batch):
@@ -43,7 +49,7 @@ class Trainer:
             context_length = self.context_length
 
         # Prepare data.
-        texts = encode_texts(get_texts(file_name, size, 42))
+        texts = encode_texts(get_texts(file_name, size, torch.randint(0, 100, (1,)).item()))
 
         # This data is of variable length. It needs to be packed before forward pass.
         data = [torch.tensor(datapoint) for datapoint in create_sliding(texts, context_length + 1, 50259)]
@@ -52,12 +58,12 @@ class Trainer:
         valid_length = int(0.1 * len(data))
         test_length = len(data) - train_length - valid_length
 
-        train_set, valid_set, test_set = torch.utils.data.random_split(data, [train_length, valid_length, test_length], self.generator)
+        train_set, valid_set, test_set = torch.utils.data.random_split(data, [train_length, valid_length, test_length])
         self.train_set, self.valid_set, self.test_set = [train_set.dataset[i] for i in train_set.indices],\
                                                         [valid_set.dataset[i] for i in valid_set.indices],\
                                                         [test_set.dataset[i] for i in test_set.indices]
 
-    def train(self, max_epochs: int = 20, max_time: int = -1, max_iterations: int = -1, batch_size: int = 8, progress_report: int = 100, use_half: bool = False) -> List[List[float]]:
+    def train(self, max_epochs: int = 20, max_time: int = -1, max_iterations: int = -1, batch_size: int = 8, progress_report: int = 1000, use_half: bool = False) -> List[List[float]]:
         """Trains the model for as long as the validation loss decreases.
 
         Args:
@@ -71,28 +77,36 @@ class Trainer:
         """
         self.model.train()
 
-        sampler = torch.utils.data.DataLoader(self.train_set, batch_size, shuffle=True, generator=self.generator, collate_fn=self._collate_fn_pad)
+        sampler = torch.utils.data.DataLoader(self.train_set, batch_size, shuffle=True, collate_fn=self._collate_fn_pad)
 
         if use_half:
-            optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3, eps=1e-4)
             self.model = self.model.half()
-        else:
-            optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3)
             
-        # Reduce the learning rate if the loss does not decrease for some iterations.
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, verbose=True)
-        losses = [[],[]]
+        epoch_losses = []
+        lowest_loss = -1
+
+        def check_performance() -> float:
+            """Checks the performance of the model and saves a checkpoint if the validation loss is lower than the lowest loss.
+            """
+            nonlocal lowest_loss
+            valid_loss = self.test(test_set=self.valid_set[:500], batch_size=batch_size)
+
+            print(f"Validation loss of current epoch: {valid_loss}")
+            
+            if lowest_loss == -1 or valid_loss < lowest_loss:
+                lowest_loss = valid_loss
+                self.save_checkpoint(type(self.model).__name__ + "CP", assert_equal_loss=False)
+
+            self.model.train()
+            return valid_loss
 
         epoch = 1
         iteration = 0
         end_time = time.time() + max_time
-        last_state_dict = {}
 
         while True:
             for batch in tqdm.tqdm(sampler, total=len(sampler), desc=f"Epoch {epoch}"):
                 try:
-                    self.model.train()
-                    
                     # The data was padded to make it loadable. Pack it to ignore padded data.
                     x = batch[:, :-1].to(self.device)
                     y = batch[:, 1:].to(self.device)
@@ -103,55 +117,42 @@ class Trainer:
                         logits = logits[0]
 
                     B, T, C = logits.shape
-                    y = y.reshape(B*T)
-                    logits = logits.reshape(B*T, C)
+                    y = y.view(B*T)
+                    logits = logits.view(B*T, C)
                     loss = torch.nn.functional.cross_entropy(logits, y, ignore_index=0) # Only compute loss on non-padded outputs.
 
-                    optimizer.zero_grad()
                     loss.backward()
 
                     # Update the model weights.
-                    optimizer.step()
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
 
                     iteration += 1
 
-                    # If necessary, decrease the learning rate if the loss does not decrease every 100 iterations.
-                    if iteration % 100 == 0:
-                        valid_loss = self.test(test_set=self.valid_set[:100], batch_size=batch_size)
-                        scheduler.step(valid_loss)
-                    
-                    # Show current performance every once in a while.
+                    # Show current performance every once in a while, and updates the learning rate.
                     if iteration % progress_report == 0:
-                        train_loss = self.test(test_set=self.train_set[:100], batch_size=batch_size)
-                        valid_loss = self.test(test_set=self.valid_set[:100], batch_size=batch_size)
-                        print(f"Training loss of current epoch: {train_loss}")
-                        print(f"Validation loss of current epoch: {valid_loss}")
+                        del x, y, logits, loss
+                        self.scheduler.step(check_performance())
 
                     if iteration == max_iterations or (max_time > 0 and time.time() > end_time):
-                        epoch = max_epochs
                         return
                 except KeyboardInterrupt as e:
-                    print("Saving model...")
-                    self.save_model()
-                    exit()
-
-            losses[0].append(self.test(test_set=self.train_set[:100], batch_size=batch_size))
-            losses[1].append(self.test(test_set=self.valid_set[:100], batch_size=batch_size))
-            self.model.train()
+                    return
 
             epoch += 1
-            gain = (losses[1][-2] - losses[1][-1]) if len(losses[1]) > 1 else 1
+            valid_loss = check_performance()
+            epoch_losses.append(valid_loss)
+
+            gain = (epoch_losses[-2] - epoch_losses[-1]) if len(epoch_losses) > 1 else 1
             if gain < 0:
                 # Validation error increased, load last state and abort.
                 print(f"Validation loss increased. Resetting state to last epoch and aborting.")
-                self.model.load_state_dict(last_state_dict)
+                self.load_checkpoint(type(self.model).__name__ + "CP")
                 break
             if epoch > max_epochs:
                 break
 
-            last_state_dict = self.model.state_dict()
-
-        return losses
+        return epoch_losses
     
     @torch.no_grad()
     def test(self, test_set: Any, batch_size: int = 16, show_progress: bool = False) -> float:
@@ -167,7 +168,7 @@ class Trainer:
         """
         self.model.eval()
 
-        sampler = torch.utils.data.DataLoader(test_set, batch_size, shuffle=True, generator=self.generator, collate_fn=self._collate_fn_pad)
+        sampler = torch.utils.data.DataLoader(test_set, batch_size, collate_fn=self._collate_fn_pad)
         batches = len(sampler)
 
         avg_loss = 0
@@ -182,8 +183,8 @@ class Trainer:
                 logits = logits[0]
 
             B, T, C = logits.shape
-            y = y.reshape(B*T)
-            logits = logits.reshape(B*T, C)
+            y = y.view(B*T)
+            logits = logits.view(B*T, C)
             loss = torch.nn.functional.cross_entropy(logits, y, ignore_index=0) # Only compute loss on non-padded outputs.
 
             avg_loss += loss.item() / batches
@@ -297,7 +298,8 @@ class Trainer:
                 next_text = enc.decode([word_code]).replace("<|padding|>", "")\
                                                     .replace("<|ingredients_end|>", "\n\nInstructions:\n")\
                                                     .replace("<|endoftext|>", "\n\n")\
-                                                    .replace("<|next_step|>", "\n")
+                                                    .replace("<|next_step|>", "\n")\
+                                                    .replace("\r", "")
                 
                 if print_live:
                     print(next_text, end="")
@@ -313,19 +315,42 @@ class Trainer:
         
         return generated_text
 
-    def save_model(self, name: str = None):
+    def save_checkpoint(self, name: str = None, assert_equal_loss: bool = True):
         """Saves the current model to disk. The model can be loaded again using load_model.
 
         Args:
             name (str, optional): The name of the model. Defaults to None. If None, the name of the model class will be used.
+            assert_equal_loss (bool, optional): Whether to assert that the loss is equal after loading the model. Defaults to True.
         """
         if name is None:
             name = type(self.model).__name__
 
-        torch.save(self.model.state_dict(), f"./Models/{name}.pkl")
+        # Move model to cpu so that state_dict is not tied to a gpu.
+        self.model.to("cpu")
+        checkpoint = {
+            'model_state_dict': self.model.state_dict(),
+            #'optimizer_state_dict': self.optimizer.state_dict(),
+            #'scheduler_state_dict': self.scheduler.state_dict()
+        }
 
-    def load_model(self, name: str = None):
-        """Loads a model from disk. The model must have been saved using save_model.
+        torch.save(checkpoint, f"./Models/{name}.pkl")
+        del checkpoint
+
+        self.model.to(self.device)
+        print("Saved.")
+
+        if assert_equal_loss:
+            print("Asserting equal loss...")
+            loss_before = self.test(self.test_set[:100], show_progress=True, batch_size=16)
+            self.load_checkpoint(name)
+            loss_after = self.test(self.test_set[:100], show_progress=True, batch_size=16)
+
+            print(f"{loss_before=}, {loss_after=}")
+
+            assert round(loss_before, 2) == round(loss_after, 2), "Loss before and after saving are not equal."
+
+    def load_checkpoint(self, name: str = None):
+        """Loads a model from disk if it exists.
 
         Args:
             name (str, optional): The name of the model. Defaults to None. If None, the name of the model class will be used.
@@ -333,5 +358,8 @@ class Trainer:
         if name is None:
             name = type(self.model).__name__
 
-        state_dict = torch.load(f"./Models/{name}.pkl")
-        self.model.load_state_dict(state_dict)
+        if os.path.exists(f"./Models/{name}.pkl"):
+            checkpoint = torch.load(f"./Models/{name}.pkl")
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            #self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            #self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
