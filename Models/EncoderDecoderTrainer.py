@@ -7,7 +7,7 @@ import tqdm
 import time
 
 torch.manual_seed(42)
-class Trainer:
+class EncoderDecoderTrainer:
     def __init__(self, model: nn.Module, context_length: int = 1, load_checkpoint: bool = True):
         """Initializes a trainer for the specified model.
 

@@ -42,17 +42,17 @@ if __name__ == "__main__":
             temperature = input("Please provide a temperature, the default is 1.0: ")
             if temperature == "":
                 temperature = 1.0
-            top_k = input("Please provide a top_k, the default is 10: ")
+            top_k = input("Please provide a top_k, the default is -1: ")
             if top_k == "":
-                top_k = 10
-            top_p = input("Please provide a top_p, the default is 0.95: ")
+                top_k = -1
+            top_p = input("Please provide a top_p, the default is 1: ")
             if top_p == "":
-                top_p = 0.95
+                top_p = 1
 
             ingredients = input("If you want, you can provide a beginning for the text generation now: ")
 
             trainer.generate_text(ingredients, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p))
     else:
-        trainer.load_data("PoetryFoundationData.csv", context_length=context_length, size=10000)
+        trainer.load_data("cnn_dailymail", context_length=context_length, size=10000)
         print(trainer.train())
         trainer.save_checkpoint()

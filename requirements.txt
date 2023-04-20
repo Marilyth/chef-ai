@@ -4,3 +4,4 @@ inflect
 torch
 tqdm
 tiktoken
+datasets

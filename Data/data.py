@@ -8,8 +8,7 @@ import csv
 import requests
 from tqdm import tqdm
 import tiktoken
-import torch
-import re
+from datasets import load_dataset
 
 
 class Instruction:
@@ -220,7 +219,13 @@ def get_texts(file_name: str = "RAW_recipes.csv", sample_size: Optional[int] = N
     """
     texts = []
 
-    data_frame = pandas.read_csv(f"./Data/{file_name}")
+    # load data if the file exists. Otherwise download from huggingface.
+    if os.path.exists(f"./Data/{file_name}"):
+        data_frame = pandas.read_csv(f"./Data/{file_name}")
+    else:
+        # Load datasets from https://huggingface.co/datasets?sort=likes
+        texts = load_dataset(file_name, "3.0.0")
+
     if sample_size:
         if random_seed:
             data_frame = data_frame.sample(sample_size, random_state=random_seed)
