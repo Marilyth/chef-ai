@@ -5,7 +5,8 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
-from Models.Instructions.ModuleBase import ModuleBase
+import optuna
+from Models.Instructions.ModuleBase import DecoderOnlyBase
 
 
 class SelfAttentionHead(nn.Module):
@@ -167,7 +168,7 @@ class DecoderBlock(nn.Module):
         x = x + self.feed_forward(self.feed_forward_layernorm(x))
         return x
 
-class Transformer(ModuleBase):
+class Transformer(DecoderOnlyBase):
     """Transformer model. This model consists of an embedding layer, a positional encoding layer, multiple decoder blocks and a linear layer. 
     The embedding layer is used to learn the representation of the words. The positional encoding layer is used to learn the position of the words.
     The decoder blocks are used to learn the relationships between the words. The linear layer is used to predict the next word.
@@ -221,3 +222,21 @@ class Transformer(ModuleBase):
         positional_embedding += self.positional_encoding(torch.arange(T, device=x.device))
 
         return self.model.forward(positional_embedding)
+
+    def get_optuna_parameters(self, trial: optuna.Trial) -> List[Any]:
+        """Gets the parameters to optimize using optuna.
+
+        Args:
+            trial (optuna.Trial): The trial.
+
+        Returns:
+            List[Any]: The parameters for the next objective step.
+        """
+        blocks: int = trial.suggest_int("blocks", 1, 10)
+        neurons: int = trial.suggest_int("neurons", 1, 1000)
+        heads: int = trial.suggest_int("heads", 1, 10)
+        # Embedding dimension must be divisible by the amount of heads, so set step to heads.
+        embedding_dimension: int = trial.suggest_int("embedding_dimension", heads, 1000, step=heads)
+        dropout: float = trial.suggest_float("dropout", 0.0, 0.5)
+
+        return [self.hparams.context_length, blocks, neurons, embedding_dimension, heads, dropout, self.hparams.vocabulary_size]

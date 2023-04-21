@@ -5,7 +5,7 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
-from Models.Instructions.ModuleBase import ModuleBase
+from Models.Instructions.ModuleBase import DecoderOnlyBase
 
 
 class LSTMCell(nn.Module):
@@ -84,7 +84,7 @@ class LSTMCell(nn.Module):
         return hidden_state, cell_state 
 
 
-class LSTM(ModuleBase):
+class LSTM(DecoderOnlyBase):
     def __init__(self, state_size: int, embedding_dimension: int, vocabulary_size: int, layers: int = 1):
         """Initializes the LSTM with the specified arguments.
         The LSTM is a recurrent neural network that uses a cell state to remember information over time.

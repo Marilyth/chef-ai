@@ -5,7 +5,7 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
-from Models.Instructions.ModuleBase import ModuleBase
+from Models.Instructions.ModuleBase import DecoderOnlyBase
 
 
 class RNNCell(nn.Module):
@@ -33,7 +33,7 @@ class RNNCell(nn.Module):
         return hidden
 
 
-class RNN(ModuleBase):
+class RNN(DecoderOnlyBase):
     def __init__(self, state_size: int, embedding_dimension: int, vocabulary_size: int, layers: int = 1):
         super().__init__()
         self.state_size = state_size

@@ -5,10 +5,10 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
-from Models.Instructions.ModuleBase import ModuleBase
+from Models.Instructions.ModuleBase import DecoderOnlyBase
 
 
-class LSTMTorch(ModuleBase):
+class LSTMTorch(DecoderOnlyBase):
     """The RNN model. This model is a simple RNN with an embedding layer and a linear output layer.
     This is done using the pytorch RNN module, which is much faster than a custom implementation.
     """

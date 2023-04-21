@@ -10,6 +10,7 @@ from tqdm import tqdm
 import tiktoken
 from datasets import load_dataset
 import torch
+import torch.utils.data
 
 
 class Instruction:
@@ -335,6 +336,16 @@ def split(data: List[Any], train_ratio: float = 0.8, valid_ratio: float = 0.1, t
             [test_set.dataset[i] for i in test_set.indices]
 
 
+def _collate_fn_pad(batch):
+        """Pad the batch to be of uniform length.
+        """
+        # Pad tensors to be of uniform length.
+        batch = [ torch.tensor(t) for t in batch ]
+        batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True)
+
+        return batch
+
+
 def list_to_dataloader(data: List[Any], batch_size: int = 32, shuffle: bool = True) -> torch.utils.data.DataLoader:
     """Converts a list to a dataloader.
 
@@ -346,13 +357,4 @@ def list_to_dataloader(data: List[Any], batch_size: int = 32, shuffle: bool = Tr
     Returns:
         torch.utils.data.DataLoader: The dataloader.
     """
-    def _collate_fn_pad(batch):
-        """Pad the batch to be of uniform length.
-        """
-        # Pad tensors to be of uniform length.
-        batch = [ torch.tensor(t) for t in batch ]
-        batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True)
-
-        return batch
-    
-    return torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn_pad)
+    return torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn_pad, num_workers=8)
