@@ -5,6 +5,7 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
+from Models.Instructions.ModuleBase import ModuleBase
 
 
 class SelfAttentionHead(nn.Module):
@@ -166,7 +167,7 @@ class DecoderBlock(nn.Module):
         x = x + self.feed_forward(self.feed_forward_layernorm(x))
         return x
 
-class Transformer(nn.Module):
+class Transformer(ModuleBase):
     """Transformer model. This model consists of an embedding layer, a positional encoding layer, multiple decoder blocks and a linear layer. 
     The embedding layer is used to learn the representation of the words. The positional encoding layer is used to learn the position of the words.
     The decoder blocks are used to learn the relationships between the words. The linear layer is used to predict the next word.
@@ -184,6 +185,7 @@ class Transformer(nn.Module):
             vocabulary_size (int): The size of the vocabulary.
         """
         super().__init__()
+        self.save_hyperparameters()
         self.context_length = context_length
         self.embedding_dimension = embedding_dimension
         self.blocks = blocks

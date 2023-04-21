@@ -5,6 +5,7 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
+from Models.Instructions.ModuleBase import ModuleBase
 
 
 class RNNCell(nn.Module):
@@ -16,6 +17,7 @@ class RNNCell(nn.Module):
             input_size (int): The size of the input.
         """
         super().__init__()
+        self.save_hyperparameters()
         self.state_size = state_size
         self.input_size = input_size
 
@@ -31,7 +33,7 @@ class RNNCell(nn.Module):
         return hidden
 
 
-class RNN(nn.Module):
+class RNN(ModuleBase):
     def __init__(self, state_size: int, embedding_dimension: int, vocabulary_size: int, layers: int = 1):
         super().__init__()
         self.state_size = state_size

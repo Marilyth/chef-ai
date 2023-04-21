@@ -5,11 +5,11 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
+from Models.Instructions.ModuleBase import ModuleBase
 
 
 class GRUCell(nn.Module):
     def __init__(self, state_size: int, embedding_dimension: int):
-        nn.GRU
         super().__init__()
         self.state_size = state_size
         self.embedding_dimension = embedding_dimension
@@ -41,9 +41,10 @@ class GRUCell(nn.Module):
 
         return hidden_state
 
-class GRU(nn.Module):
+class GRU(ModuleBase):
     def __init__(self, state_size: int, embedding_dimension: int, vocab_size: int, layers: int = 1):
         super().__init__()
+        self.save_hyperparameters()
         self.state_size = state_size
         self.embedding_dimension = embedding_dimension
         self.layers = layers

@@ -8,6 +8,9 @@ import Models.Instructions.GRUTorch
 import Models.Trainer
 from Data import data
 import torch
+import lightning
+import lightning.pytorch.callbacks
+import os
 
 # Installing pytorch with CUDA is weird, check https://pytorch.org/ for instructions.
 
@@ -15,21 +18,25 @@ if __name__ == "__main__":
     model_type = input("Please choose a model type (Transformer, RNNTorch, RNN, LSTMTorch, LSTM, GRUTorch, GRU): ")
     context_length = 320
     torch.manual_seed(42)
+    lightning.seed_everything(42)
 
     if model_type == "Transformer":
-        trainer = Models.Trainer.Trainer(Models.Instructions.Transformer.Transformer(context_length, 2, 500, 700, 7, 0.0, data.enc.n_vocab + 1), context_length=context_length)
+        model = Models.Instructions.Transformer.Transformer(context_length, 2, 500, 700, 7, 0.0, data.enc.n_vocab + 1)
     elif model_type == "RNNTorch":
-        trainer = Models.Trainer.Trainer(Models.Instructions.RNNTorch.RNNTorch(500, 500, data.enc.n_vocab + 1, 1))
+        model = Models.Instructions.RNNTorch.RNNTorch(500, 500, data.enc.n_vocab + 1, 1)
     elif model_type == "RNN":
-        trainer = Models.Trainer.Trainer(Models.Instructions.RNN.RNN(500, 500, data.enc.n_vocab + 1, 1))
+        model = Models.Instructions.RNN.RNN(500, 500, data.enc.n_vocab + 1, 1)
     elif model_type == "LSTM":
-        trainer = Models.Trainer.Trainer(Models.Instructions.LSTM.LSTM(1000, 500, data.enc.n_vocab + 1, 1))
+        model = Models.Instructions.LSTM.LSTM(1000, 500, data.enc.n_vocab + 1, 1)
     elif model_type == "LSTMTorch":
-        trainer = Models.Trainer.Trainer(Models.Instructions.LSTMTorch.LSTMTorch(1000, 1000, data.enc.n_vocab + 1, 1))
+        model = Models.Instructions.LSTMTorch.LSTMTorch(1000, 1000, data.enc.n_vocab + 1, 1)
     elif model_type == "GRU":
-        trainer = Models.Trainer.Trainer(Models.Instructions.GRU.GRU(1000, 500, data.enc.n_vocab + 1, 1))
+        model = Models.Instructions.GRU.GRU(1000, 500, data.enc.n_vocab + 1, 1)
     elif model_type == "GRUTorch":
-        trainer = Models.Trainer.Trainer(Models.Instructions.GRUTorch.GRUTorch(1000, 1000, data.enc.n_vocab + 1, 1))
+        model = Models.Instructions.GRUTorch.GRUTorch(1000, 1000, data.enc.n_vocab + 1, 1)
+
+    checkpointer = lightning.pytorch.callbacks.ModelCheckpoint(monitor="val_loss", mode="min", dirpath="checkpoints", filename=type(model).__name__)
+    trainer = lightning.Trainer(deterministic=True, gradient_clip_val=0.5, val_check_interval=100, limit_val_batches=100, callbacks=[checkpointer])
 
     mode = input("Please choose a mode (train, test): ")
     if mode == "test":
@@ -53,6 +60,15 @@ if __name__ == "__main__":
 
             trainer.generate_text(ingredients, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p))
     else:
-        trainer.load_data("cnn_dailymail", context_length=context_length, size=10000)
-        print(trainer.train())
-        trainer.save_checkpoint()
+        dataset = data.get_texts("merve/poetry")["content"].values.tolist()
+        dataset = data.encode_texts(dataset)
+        train, valid, test = data.split(dataset, 0.8, 0.1, 0.1)
+        train_loader = data.list_to_dataloader(data.create_sliding(train, context_length), 8)
+        valid_loader = data.list_to_dataloader(data.create_sliding(valid, context_length), 8, shuffle=False)
+        test_loader = data.list_to_dataloader(data.create_sliding(test, context_length), 8, shuffle=False)
+
+        # Load checkpoint if wanted and the file exists.
+        if os.path.isfile("checkpoints/" + type(model).__name__ + ".ckpt") and input("Do you want to load a checkpoint? (y/n): ") == "y":
+            trainer.fit(model, train_loader, valid_loader, ckpt_path="checkpoints/" + type(model).__name__ + ".ckpt")
+        else:
+            trainer.fit(model, train_loader, valid_loader)

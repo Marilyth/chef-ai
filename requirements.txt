@@ -5,3 +5,4 @@ torch
 tqdm
 tiktoken
 datasets
+lightning

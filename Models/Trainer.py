@@ -5,6 +5,7 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
+import lightning
 
 torch.manual_seed(42)
 class Trainer:
@@ -15,22 +16,7 @@ class Trainer:
             model (nn.Module): The model to train.
             context_length (int): The context length the predict the next word with during generation. For RNN models this is 1.
         """
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.context_length = context_length
-
-        self.model = model
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-3)
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=4, verbose=True)
-        self.iteration = 0
-
-        # Load checkpoint if it exists.
-        if load_checkpoint:
-            self.load_checkpoint()
-
-        # Move model to device.
-        self.model.to(self.device)
-        self.optimizer.load_state_dict(self.optimizer.state_dict())
-        self.scheduler.load_state_dict(self.scheduler.state_dict())
+        lightning.Trainer()
 
     def _collate_fn_pad(self, batch):
         """Pad the batch to be of uniform length.
@@ -68,99 +54,7 @@ class Trainer:
                                                         [test_set.dataset[i] for i in test_set.indices]
 
     def train(self, max_epochs: int = 20, max_time: int = -1, max_iterations: int = -1, batch_size: int = 8, progress_report: int = 1000, use_half: bool = False) -> List[List[float]]:
-        """Trains the model for as long as the validation loss decreases.
-
-        Args:
-            max_epochs (int, optional): The maximum amount of epochs to train for. Defaults to 20.
-            max_time (int, optional): The maximum amount of time to train for. Defaults to -1.
-            max_iterations (int, optional): The maximum amount of iterations to train for. Defaults to -1.
-            batch_size (int, optional): The batch size. Defaults to 8.
-            progress_report (int, optional): The amount of iterations between progress reports. Defaults to 100.
-        Returns:
-            List[List[float]]: The training and validation losses.
-        """
-        self.model.train()
-
-        sampler = torch.utils.data.DataLoader(self.train_set, batch_size, shuffle=True, collate_fn=self._collate_fn_pad)
-
-        if use_half:
-            self.model = self.model.half()
-            
-        epoch_losses = []
-
-        def check_performance() -> float:
-            """Checks the performance of the model and saves a checkpoint if the validation loss is lower than the lowest loss.
-            """
-            valid_loss = self.test(test_set=self.valid_set[:500], batch_size=batch_size)
-
-            print(f"Validation loss of current epoch: {valid_loss}")
-            
-            # Save checkpoint if the validation loss is lower than the lowest loss.
-            if valid_loss < self.scheduler.best:
-                self.save_checkpoint(type(self.model).__name__ + "CP", assert_equal_loss=False)
-
-            self.model.train()
-            return valid_loss
-
-        epoch = 1
-        iteration = -self.iteration
-        end_time = time.time() + max_time
-
-        while True:
-            for batch in tqdm.tqdm(sampler, total=len(sampler), desc=f"Epoch {epoch}"):
-                # Skip until the checkpoint iteration.
-                if iteration < 0:
-                    iteration += 1
-                    continue
-
-                try:
-                    # The data was padded to make it loadable. Pack it to ignore padded data.
-                    x = batch[:, :-1].to(self.device)
-                    y = batch[:, 1:].to(self.device)
-                    logits = self.model.forward(x)
-
-                    # If the model returns a list, take the first element. Those are the logits.
-                    if type(logits) is list or type(logits) is tuple:
-                        logits = logits[0]
-
-                    B, T, C = logits.shape
-                    y = y.view(B*T)
-                    logits = logits.view(B*T, C)
-                    loss = torch.nn.functional.cross_entropy(logits, y, ignore_index=0) # Only compute loss on non-padded outputs.
-
-                    loss.backward()
-
-                    # Update the model weights.
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
-
-                    iteration += 1
-                    self.iteration += 1
-
-                    # Show current performance every once in a while, and updates the learning rate.
-                    if iteration % progress_report == 0:
-                        del x, y, logits, loss
-                        self.scheduler.step(check_performance())
-
-                    if iteration == max_iterations or (max_time > 0 and time.time() > end_time):
-                        return
-                except KeyboardInterrupt as e:
-                    return
-
-            epoch += 1
-            valid_loss = check_performance()
-            epoch_losses.append(valid_loss)
-
-            gain = (epoch_losses[-2] - epoch_losses[-1]) if len(epoch_losses) > 1 else 1
-            if gain < 0:
-                # Validation error increased, load last state and abort.
-                print(f"Validation loss increased. Resetting state to last epoch and aborting.")
-                self.load_checkpoint(type(self.model).__name__ + "CP")
-                break
-            if epoch > max_epochs:
-                break
-
-        return epoch_losses
+        pass
     
     @torch.no_grad()
     def test(self, test_set: Any, batch_size: int = 16, show_progress: bool = False) -> float:

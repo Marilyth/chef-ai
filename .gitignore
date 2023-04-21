@@ -131,3 +131,6 @@ dmypy.json
 *.csv
 *.txt
 *.pkl
+
+lightning_logs/
+checkpoints/

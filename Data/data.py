@@ -9,6 +9,7 @@ import requests
 from tqdm import tqdm
 import tiktoken
 from datasets import load_dataset
+import torch
 
 
 class Instruction:
@@ -207,7 +208,7 @@ def get_text_lists() -> List[List[str]]:
     return ingredient_lists
 
 
-def get_texts(file_name: str = "RAW_recipes.csv", sample_size: Optional[int] = None, random_seed: Optional[int] = None) -> List[str]:
+def get_texts(data_name: str = "RAW_recipes.csv", columns = []) -> pandas.DataFrame:
     """Returns a list of all elements in the dataset of the file.
 
     Args:
@@ -219,33 +220,10 @@ def get_texts(file_name: str = "RAW_recipes.csv", sample_size: Optional[int] = N
     """
     texts = []
 
-    # load data if the file exists. Otherwise download from huggingface.
-    if os.path.exists(f"./Data/{file_name}"):
-        data_frame = pandas.read_csv(f"./Data/{file_name}")
-    else:
-        # Load datasets from https://huggingface.co/datasets?sort=likes
-        texts = load_dataset(file_name, "3.0.0")
+    # Load datasets from https://huggingface.co/datasets?sort=likes
+    texts = load_dataset(data_name).shuffle(seed=42)
 
-    if sample_size:
-        if random_seed:
-            data_frame = data_frame.sample(sample_size, random_state=random_seed)
-        else:
-            data_frame = data_frame.sample(sample_size)
-
-    if file_name == "RAW_recipes.csv":
-        ingredient_lists = data_frame["ingredients"].to_list()
-        instruction_lists = data_frame["steps"].to_list()
-
-        for ingredients, instructions in zip(ingredient_lists, instruction_lists):
-            recipe = ingredients.replace("['", "").replace("']", "").replace("', '", ", ").replace("', \"", ", ").replace("\", '", ", ").replace("\", \"", ", ") + "<|ingredients_end|>"
-            recipe += instructions.replace("['", "").replace("']", "").replace("', '", "<|next_step|>").replace("', \"", "<|next_step|>").replace("\", '", "<|next_step|>").replace("\", \"", "<|next_step|>") + "<|endoftext|>"
-            texts.append(recipe)
-    elif file_name == "PoetryFoundationData.csv":
-        texts: List[str] = data_frame["Poem"].to_list()
-        for i in range(len(texts)):
-            texts[i] = texts[i].strip().replace("\r\r\n", "<|next_step|>") + "<|endoftext|>"
-
-    return texts
+    return texts.data["train"].to_pandas()
 
 
 def encode_texts(recipes: List[str]) -> List[List[int]]:
@@ -334,3 +312,47 @@ def create_sliding(corpus: List[List[Any]], n: int = 2, pad_code: int = 0) -> Tu
             data.append(context[i:i + n])
     
     return data
+
+def split(data: List[Any], train_ratio: float = 0.8, valid_ratio: float = 0.1, test_ratio: float = 0.1) -> Tuple[List[Any], List[Any], List[Any]]:
+    """Splits the dataset into train, validation and test sets.
+
+    Args:
+        data (List[Any]): The dataset.
+        train_ratio (float, optional): The ratio of the train set. Defaults to 0.8.
+        valid_ratio (float, optional): The ratio of the validation set. Defaults to 0.1.
+        test_ratio (float, optional): The ratio of the test set. Defaults to 0.1.
+
+    Returns:
+        Tuple[List[Any], List[Any], List[Any]]: The train, validation and test sets.
+    """
+    train_length = int(train_ratio * len(data))
+    valid_length = int(valid_ratio * len(data))
+    test_length = len(data) - train_length - valid_length
+
+    train_set, valid_set, test_set = torch.utils.data.random_split(data, [train_length, valid_length, test_length])
+    return [train_set.dataset[i] for i in train_set.indices],\
+            [valid_set.dataset[i] for i in valid_set.indices],\
+            [test_set.dataset[i] for i in test_set.indices]
+
+
+def list_to_dataloader(data: List[Any], batch_size: int = 32, shuffle: bool = True) -> torch.utils.data.DataLoader:
+    """Converts a list to a dataloader.
+
+    Args:
+        data (List[Any]): The dataset.
+        batch_size (int, optional): The batch size. Defaults to 32.
+        shuffle (bool, optional): Whether to shuffle the dataset. Defaults to True.
+
+    Returns:
+        torch.utils.data.DataLoader: The dataloader.
+    """
+    def _collate_fn_pad(batch):
+        """Pad the batch to be of uniform length.
+        """
+        # Pad tensors to be of uniform length.
+        batch = [ torch.tensor(t) for t in batch ]
+        batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True)
+
+        return batch
+    
+    return torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn_pad)

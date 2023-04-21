@@ -5,6 +5,7 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
+from Models.Instructions.ModuleBase import ModuleBase
 
 
 class LSTMCell(nn.Module):
@@ -83,7 +84,7 @@ class LSTMCell(nn.Module):
         return hidden_state, cell_state 
 
 
-class LSTM(nn.Module):
+class LSTM(ModuleBase):
     def __init__(self, state_size: int, embedding_dimension: int, vocabulary_size: int, layers: int = 1):
         """Initializes the LSTM with the specified arguments.
         The LSTM is a recurrent neural network that uses a cell state to remember information over time.
@@ -95,6 +96,7 @@ class LSTM(nn.Module):
             layers (int, optional): The number of layers. Defaults to 1.
         """
         super().__init__()
+        self.save_hyperparameters()
         self.state_size = state_size
         self.embedding_dimension = embedding_dimension
         self.vocabulary_size = vocabulary_size

@@ -5,14 +5,16 @@ import torch.utils.data
 from Data.data import *
 import tqdm
 import time
+from Models.Instructions.ModuleBase import ModuleBase
 
 
-class LSTMTorch(nn.Module):
+class LSTMTorch(ModuleBase):
     """The RNN model. This model is a simple RNN with an embedding layer and a linear output layer.
     This is done using the pytorch RNN module, which is much faster than a custom implementation.
     """
     def __init__(self, state_size: int, embedding_dimension: int, vocabulary_size: int, layers: int = 1):
         super().__init__()
+        self.save_hyperparameters()
         self.state_size = state_size
         self.embedding_dimension = embedding_dimension
         self.vocabulary_size = vocabulary_size
