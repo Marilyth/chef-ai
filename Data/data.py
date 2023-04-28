@@ -7,209 +7,109 @@ import inflect
 import csv
 import requests
 from tqdm import tqdm
-import tiktoken
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 import torch
 import torch.utils.data
+import pytorch_lightning as lightning
+from transformers import AutoTokenizer, PreTrainedTokenizer
 
 
-class Instruction:
-    def __init__(self, instruction: str):
-        self.instruction: str = instruction
+class EncoderDecoderDataset(torch.utils.data.Dataset):
+    def __init__(self, encoder_inputs, decoder_inputs):
+        self.encoder_inputs = torch.tensor(encoder_inputs)
+        self.decoder_inputs = torch.tensor(decoder_inputs)
 
-    def __str__(self) -> str:
-        return self.instruction.replace(",", " -")
+    def __len__(self):
+        return len(self.encoder_inputs)
 
-class Ingredient:
-    def __init__(self, name: str, amount: str, unit: str):
-        self.name: str = name
-        self.amount: str = amount if amount else "1"
-        self.unit: str = unit
-
-    def __str__(self):
-        return f"{' '.join([self.amount, self.unit]).strip()}:{self.name}".replace(",", "")
-
-class Recipe:
-    def __init__(self, name: str, stars: float, ratings: int):
-        self.name = name
-        self.stars = stars
-        self.ratings = ratings
-        self.ingredients: List[Ingredient] = []
-        self.instructions: List[Instruction] = []
-
-    def add_ingredient(self, ingredient: Ingredient):
-        self.ingredients.append(ingredient)
-    
-    def add_instruction(self, instruction: Instruction):
-        self.instructions.append(instruction)
-
-    def __str__(self) -> str:
-        ingredients_string = f"[{','.join([ingredient.name for ingredient in self.ingredients])}]"
-        units_string = f"[{','.join([' '.join([ingredient.amount, ingredient.unit]).strip() for ingredient in self.ingredients])}]"
-        instructions_string = f"[{','.join([str(instruction) for instruction in self.instructions])}]"
-        return f"{self.name.replace(',', '')},{ingredients_string},{units_string},{instructions_string}"
+    def __getitem__(self, idx):
+        encoder_input = self.encoder_inputs[idx]
+        decoder_input = self.decoder_inputs[idx]
+        return encoder_input, decoder_input
 
 
-def crawl_food_com(start_index: int = 0, recipes_to_retrieve: int = -1):
-    """Crawls through https://www.food.com/recipe/all/trending?pn={page} and extracts recipe information.
-    The recipes are written into recipes.csv.
+class SummarizationDataset(lightning.LightningDataModule):
+    def __init__(self, batch_size: int = 8, encoder_input_length: int = 512, decoder_input_length: int = 128, samples: int = 2000, **kwargs):
+        super().__init__()
+        self.batch_size = batch_size
+        self.max_source_length = encoder_input_length
+        # +1 because the decoder is used as both input and output, shifted by 1.
+        self.max_target_length = decoder_input_length + 1
+        self.samples = samples
+        self.save_hyperparameters()
 
-    Args:
-        recipes_to_retrieve (int, optional): The amount of recipes to retrieve. Defaults to -1 (until done).
-        start_index (int, optional): The recipe to start at. Defaults to 0.
-    """
-    trending_page = "https://www.food.com/recipe/all/trending?pn={0}"
-
-    with open("./Data/recipes.csv", "a+") as recipes_file:
-        # Will break if no more recipes are found.
-        recipes_retrieved = 0
-        first_page = trending_page.format(1)
-        response = requests.get(first_page).text
-        total_recipes = int(json.loads(response.split("var initialData = ")[-1].split(";\n\n</script>")[0])["response"]["totalResultsCount"])
-        end_index = (min(total_recipes, recipes_to_retrieve + start_index) if recipes_to_retrieve > 0 else total_recipes) - 1
-        end_page_index = (end_index // 10) + 1
-        start_page_index = (start_index // 10) + 1
-
-        for i in tqdm(range(start_page_index, end_page_index + 1), f"Page progression"):
-            try:
-                current_page = trending_page.format(i)
-                response = requests.get(current_page).text
-                page_data = response.split("var initialData = ")[-1].split(";\n\n</script>")[0]
-                page_object = json.loads(page_data)
-                for recipe in page_object["response"]["results"]:
-                    try:
-                        current_recipe = Recipe(recipe["main_title"], float(recipe["main_rating"]), int(recipe["main_num_ratings"]))
-                        recipe_details = requests.get(recipe["record_url"]).text
-                        recipe_data = '{"@context"' + recipe_details.split('{"@context"')[-2].split("</script>")[0]
-                        recipe_object = json.loads(recipe_data)
-
-                        # Add ingredients.
-                        for ingredient in recipe_object["recipeIngredient"][(start_index % 10) if i == start_page_index else 0:]:
-                            # Always take first option.
-                            ingredient = ingredient.split(" or ")[0]
-                            ingredient_description = ingredient.split("   ")[-1]
-                            ingredient_quantity = ingredient[:-len(ingredient_description)].strip()
-                            ingredient_quantity =  ingredient_quantity.split("(")[0] + ingredient_quantity.split(")")[-1] if "(" in ingredient_quantity and ")" in ingredient_quantity else ingredient_quantity
-                            ingredient_amount, ingredient_unit = ingredient_quantity.split("  ") if "  " in ingredient_quantity else [ingredient_quantity, ""]
-                            ingredient_unit = ingredient_unit.replace(" ", "")
-                            if not ingredient_unit:
-                                ingredient_unit = "unit"
-
-                            current_recipe.add_ingredient(Ingredient(ingredient_description.replace(",", ".").strip(), ingredient_amount.strip(), ingredient_unit.strip()))
-                        
-                        # Add instructions.
-                        for instruction in recipe_object["recipeInstructions"]:
-                            current_recipe.add_instruction(Instruction(instruction["text"].strip()))
-
-                        recipes_file.write(f"{start_index + recipes_retrieved},{current_recipe}\n")
-                    except Exception as e:
-                        print(f"Fetching recipe failed: {e}\n{recipe}")
-                    
-                    recipes_retrieved += 1
-                    if recipes_retrieved >= recipes_to_retrieve:
-                        break
-            except Exception as e:
-                print(f"Fetching page {i} failed: {e}")
-
-            if not page_object["hasMore"]:
-                break
-
-
-
-def _download_dataset(name="shuyangli94/food-com-recipes-and-user-interactions", file_name="RAW_recipes.csv"):
-    """Downloads and extracts the food.com recipe dataset, if not already present.
-
-    Returns:
-        bool: Whether the data is now available or not.
-    """
-    if not os.path.exists(f"./Data/{file_name}"):
-        try:
-            print("Downloading dataset...", end="")
-            import kaggle
+    def setup(self, stage):
+        if stage == "fit":
+            self.train_dataset = load_dataset("cnn_dailymail", "3.0.0", split="train").remove_columns(["id"])[:self.samples]
+            tokenized = self.tokenize_iteratively(self.train_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["article", "highlights"])
+            self.train_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
             
-            if not os.path.exists(file_name):
-                # Download dataset.
-                kaggle.api.dataset_download_file(name, file_name, path='./')
-
-                print(" Done")
-
-            print("Extracting dataset...", end="")
-
-            shutil.unpack_archive(file_name + ".zip", "./Data")
-            os.remove(file_name + ".zip")
-
-            print(" Done")
-        except Exception as e:
-            if "Could not find kaggle.json" in str(e):
-                print("Kaggle credentials not found. Please follow the instructions here: https://github.com/Kaggle/kaggle-api#api-credentials")
-            else:
-                print(e)
+            self.val_dataset = load_dataset("cnn_dailymail", "3.0.0", split="validation").remove_columns(["id"])[:1000]
+            self.val_dataset = EncoderDecoderDataset(add_start_tokens(tokenizer(self.val_dataset["article"], max_length=self.max_source_length - 1, padding=True, truncation=True).data["input_ids"]),\
+                                                        add_start_tokens(tokenizer(self.val_dataset["highlights"], max_length=self.max_target_length - 1, padding=True, truncation=True).data["input_ids"]))
+        elif stage == "test":
+            self.test_dataset = load_dataset("cnn_dailymail", "3.0.0", split="test").remove_columns(["id"])[:1000]
+            self.test_dataset = EncoderDecoderDataset(add_start_tokens(tokenizer(self.test_dataset["article"], max_length=self.max_source_length - 1, padding=True, truncation=True).data["input_ids"]),\
+                                                        add_start_tokens(tokenizer(self.test_dataset["highlights"], max_length=self.max_target_length - 1, padding=True, truncation=True).data["input_ids"]))
     
-    if not os.path.exists(f"./Data/{file_name}"):
-        exit(1)
+    def tokenize_iteratively(self, dataset: Dataset, max_lengths: List[int], columns: List[str], step_size: int = 1000, column_first: bool = True, **kwargs) -> List[List[int]]:
+        """Tokenizes a dataset in steps of step_size to avoid memory errors. Returns a list of tokenized columns.
 
+        Args:
+            dataset (Dataset): The dataset to tokenize.
+            max_lengths (List[int]): The maximum lengths of the tokenized columns.
+            columns (List[str]): The columns to tokenize.
 
-#_download_recipes()
-word_to_code: Dict[str, int] = {".": 0}
-code_to_word: Dict[int, str] = {0: "."}
-gpt_encoder = tiktoken.get_encoding("gpt2")
-enc = tiktoken.Encoding(name="gpt2_recipe", 
-                        pat_str=gpt_encoder._pat_str,
-                        mergeable_ranks=gpt_encoder._mergeable_ranks,
-                        special_tokens={
-                            **gpt_encoder._special_tokens,
-                            "<|ingredients_end|>": 50257,
-                            "<|next_step|>": 50258,
-                            "<|padding|>": 50259,
-                        })
+        Returns:
+            List[List[int]]: The tokenized columns.
+        """
+        tokenized = []
+        for column in columns:
+            tokenized.append([])
 
-def get_text_lists() -> List[List[str]]:
-    """Returns all recipe's ingredients.
+        for i in tqdm(range(0, len(dataset[columns[0]] if column_first else dataset), step_size), desc="Tokenizing"):
+            for j, column in enumerate(columns):
+                if column_first:
+                    data = dataset[column][i:i+step_size]
+                else:
+                    data = [data_point[column] for data_point in dataset[i:i+step_size]]
+                tokenized[j].extend(add_start_tokens(tokenizer(data, max_length=max_lengths[j], padding=True, truncation=True, **kwargs).data["input_ids"]))
 
-    Returns:
-        List[List[str]]: The ingredient lists.
-    """
-    if not os.path.exists("./Data/ingredients.csv"):
-        singularizer = inflect.engine()
-        data_frame = pandas.read_csv("./Data/RAW_recipes.csv")
-        ingredient_lists = data_frame["ingredients"]
+        return tokenized
 
-        # Parse list expression to actual list. Remove entries which contain ".
-        ingredient_lists: List[List[str]] = [json.loads(ingredient_list.replace(" and ", "', '").replace("'","\"")) for ingredient_list in ingredient_lists.to_list() if "\"" not in ingredient_list]
+    def encode(self, text: List[str]) -> List[List[int]]:
+        return encode_texts(text)
 
-        with open("./Data/ingredients.csv", "w+") as ingredients_file:
-            for i, ingredient_list in enumerate(ingredient_lists[:]):
-                for j, ingredient in enumerate(ingredient_list[:]):
-                    singular_words = []
+    def train_dataloader(self) -> torch.utils.data.DataLoader:
+        return torch.utils.data.DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True)
 
-                    # Inflect returns False if already singular, else the singular word. This is so annoying.
-                    for word in ingredient.split(" "):
-                        if word:
-                            singular_word = singularizer.singular_noun(word)
-                            singular_words.append(singular_word if singular_word else word)
+    def val_dataloader(self) -> torch.utils.data.DataLoader:
+        return torch.utils.data.DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False)
 
-                    singular_ingredient = " ".join(singular_words)
-                    ingredient_lists[i][j] = singular_ingredient
+    def test_dataloader(self) -> torch.utils.data.DataLoader:
+        return torch.utils.data.DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False)
+    
+class TranslationDataset(SummarizationDataset):
+    def __init__(self, batch_size: int = 8, encoder_input_length: int = 64, decoder_input_length: int = 64, samples: int = 2000, **kwargs):
+        super().__init__(batch_size, encoder_input_length, decoder_input_length, samples, **kwargs)
 
-            ingredients_file.write("\n".join([",".join(ingredient_list) for ingredient_list in ingredient_lists]))
-    else:
-        with open("./Data/ingredients.csv", "r") as ingredients_file:
-            ingredient_lists = list(csv.reader(ingredients_file, delimiter=","))
-            ingredient_lists = [ingredient_list for ingredient_list in ingredient_lists]
+    def setup(self, stage):
+        if stage == "fit":
+            self.train_dataset = load_dataset("opus100", "de-en", split="train")[:self.samples]["translation"]
+            tokenized = self.tokenize_iteratively(self.train_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["de", "en"], column_first=False)
+            self.train_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
+            
+            self.val_dataset = load_dataset("opus100", "de-en", split="validation")[:1000]["translation"]
+            tokenized = self.tokenize_iteratively(self.val_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["de", "en"], column_first=False)
+            self.val_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
+        elif stage == "test":
+            self.test_dataset = load_dataset("opus100", "de-en", split="test")[:1000]["translation"]
+            tokenized = self.tokenize_iteratively(self.test_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["de", "en"], column_first=False)
+            self.test_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
 
-    ingredient_set: Set[str] = set()
-    for ingredient_list in ingredient_lists:
-        for ingredient in ingredient_list:
-            ingredient_set.add(ingredient)
+tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("t5-small")
 
-    for i, ingredient in enumerate(sorted(list(ingredient_set))):
-        word_to_code[ingredient] = i + 1
-        code_to_word[i + 1] = ingredient
-
-    return ingredient_lists
-
-
-def get_texts(data_name: str = "RAW_recipes.csv", columns = []) -> pandas.DataFrame:
+def get_texts(data_name: str = "RAW_recipes.csv", **kwargs) -> pandas.DataFrame:
     """Returns a list of all elements in the dataset of the file.
 
     Args:
@@ -222,36 +122,17 @@ def get_texts(data_name: str = "RAW_recipes.csv", columns = []) -> pandas.DataFr
     texts = []
 
     # Load datasets from https://huggingface.co/datasets?sort=likes
-    texts = load_dataset(data_name).shuffle(seed=42)
+    texts = load_dataset(data_name, **kwargs).shuffle(seed=42)
 
     return texts.data["train"].to_pandas()
 
 
 def encode_texts(recipes: List[str]) -> List[List[int]]:
-    return enc.encode_batch(recipes, allowed_special="all")
+    return [tokenizer.encode(recipe) for recipe in recipes]
 
 
 def decode_texts(recipes: List[List[int]]) -> List[str]:
-    return [enc.decode(recipe) for recipe in recipes]
-
-
-def encode_text_lists(ingredient_lists: List[List[str]]) -> List[List[int]]:
-    """Creates an encoded ingredient list, equivalent to the passed one.
-
-    Args:
-        ingredient_lists (List[List[str]]): The ingredient lists to encode.
-
-    Returns:
-        List[List[int]]: The encoded ingredient lists.
-    """
-    encoded_ingredient_lists: List[List[int]] = []
-
-    for ingredient_list in ingredient_lists:
-        encoded_ingredient_lists.append([])
-        for ingredient in ingredient_list:
-            encoded_ingredient_lists[-1].append(word_to_code[ingredient])
-
-    return encoded_ingredient_lists
+    return [tokenizer.decode(recipe) for recipe in recipes]
 
 
 def get_word_counts(ingredient_lists: List[List[Any]]) -> List[Tuple[Any, int]]:
@@ -267,7 +148,7 @@ def get_word_counts(ingredient_lists: List[List[Any]]) -> List[Tuple[Any, int]]:
     return sorted(list(counts_dict.items()), key=lambda x: x[-1], reverse=True)
 
 
-def create_ngram(corpus: List[List[Any]], n: int = 2, pad_code: int = 0, add_ending: bool = True) -> Tuple[List[List[Any]]]:
+def create_ngram(corpus: List[List[Any]], n: int = 2, pad_code: int = 50259, add_ending: bool = True) -> Tuple[List[List[Any]]]:
     """Splits the corpus into a dataset with a context length of n.
 
     Args:
@@ -290,7 +171,7 @@ def create_ngram(corpus: List[List[Any]], n: int = 2, pad_code: int = 0, add_end
     return data
 
 
-def create_sliding(corpus: List[List[Any]], n: int = 2, pad_code: int = 0) -> Tuple[List[List[Any]]]:
+def create_sliding(corpus: List[List[Any]], n: int = 2, pad_code: int = 50259, remove_excess: bool = False) -> Tuple[List[List[Any]]]:
     """Creates a sliding window of maximum size n, beginning with 1 pad. 
     Useful for transformers who can learn on any context length.
     If the text does not contain n words, it keeps its size + 1 (left pad).
@@ -301,6 +182,7 @@ def create_sliding(corpus: List[List[Any]], n: int = 2, pad_code: int = 0) -> Tu
         corpus (List[List[Any]]): The original dataset.
         n (int, optional): The maximum window size. Defaults to 2.
         pad_code (int, optional): The encoding for the padding character. Defaults to 0.
+        remove_excess (bool, optional): Whether to only return 1 window, and remove the excess. Defaults to False.
 
     Returns:
         Tuple[List[List[Any]]]: The dataset.
@@ -311,8 +193,15 @@ def create_sliding(corpus: List[List[Any]], n: int = 2, pad_code: int = 0) -> Tu
         context = [pad_code] + word
         for i in range(max((len(word) + 1) - n, 1)):
             data.append(context[i:i + n])
+            if remove_excess:
+                break
     
     return data
+
+
+def add_start_tokens(text: List[int]) -> List[int]:
+    return [[tokenizer.pad_token_id] + t for t in text]
+
 
 def split(data: List[Any], train_ratio: float = 0.8, valid_ratio: float = 0.1, test_ratio: float = 0.1) -> Tuple[List[Any], List[Any], List[Any]]:
     """Splits the dataset into train, validation and test sets.
@@ -330,20 +219,10 @@ def split(data: List[Any], train_ratio: float = 0.8, valid_ratio: float = 0.1, t
     valid_length = int(valid_ratio * len(data))
     test_length = len(data) - train_length - valid_length
 
-    train_set, valid_set, test_set = torch.utils.data.random_split(data, [train_length, valid_length, test_length])
+    train_set, valid_set, test_set = torch.utils.data.random_split(data, [train_length, valid_length, test_length], generator=torch.Generator().manual_seed(42))
     return [train_set.dataset[i] for i in train_set.indices],\
             [valid_set.dataset[i] for i in valid_set.indices],\
             [test_set.dataset[i] for i in test_set.indices]
-
-
-def _collate_fn_pad(batch):
-        """Pad the batch to be of uniform length.
-        """
-        # Pad tensors to be of uniform length.
-        batch = [ torch.tensor(t) for t in batch ]
-        batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True)
-
-        return batch
 
 
 def list_to_dataloader(data: List[Any], batch_size: int = 32, shuffle: bool = True) -> torch.utils.data.DataLoader:
@@ -353,8 +232,13 @@ def list_to_dataloader(data: List[Any], batch_size: int = 32, shuffle: bool = Tr
         data (List[Any]): The dataset.
         batch_size (int, optional): The batch size. Defaults to 32.
         shuffle (bool, optional): Whether to shuffle the dataset. Defaults to True.
-
+        length (int, optional): The length of the sequences. Defaults to 320.
     Returns:
         torch.utils.data.DataLoader: The dataloader.
     """
-    return torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn_pad, num_workers=8)
+    # Transform the dataset into a Tensor of tensors of equal length.
+    data_tensors = [ torch.tensor(t) for t in data ]
+    data_tensors = torch.nn.utils.rnn.pad_sequence(data_tensors, batch_first=True)
+
+    return torch.utils.data.DataLoader(data_tensors, batch_size=batch_size, shuffle=shuffle)
+    

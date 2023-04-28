@@ -38,7 +38,7 @@ class DecoderOnlyBase(lightning.LightningModule, ABC):
         output = output.reshape(B*T, C)
 
         # Calculate the loss.
-        loss = nn.CrossEntropyLoss()(output, target)
+        loss = nn.CrossEntropyLoss()(output, target, ignore_index=tokenizer.pad_token_id)
 
         # Log the loss.
         self.log(log_name, loss, prog_bar=True, logger=True)
@@ -103,7 +103,7 @@ class DecoderOnlyBase(lightning.LightningModule, ABC):
         """
         return []
 
-    def optuna_optimize(self, train_dataset: torch.utils.data.Dataset, val_dataset: torch.utils.data.Dataset, n_trials: int = 10, n_jobs: int = 1) -> Tuple[Dict[str, Any], float]:
+    def optuna_optimize(self, train_dataset: torch.utils.data.Dataset, val_dataset: torch.utils.data.Dataset, n_trials: int = 10, n_jobs: int = 1, time_per_trial: str = "00:00:05:00") -> Tuple[Dict[str, Any], float]:
         """Optimizes the model using optuna.
 
         Args:
@@ -132,8 +132,9 @@ class DecoderOnlyBase(lightning.LightningModule, ABC):
             # Create the trainer.
             trainer = lightning.Trainer(
                 logger=True,
-                deterministic=True, gradient_clip_val=0.5, val_check_interval=100, limit_val_batches=100, max_time="00:00:05:00",
+                deterministic=True, max_time=time_per_trial,
                 enable_checkpointing=False,
+                val_check_interval=500,
                 callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss")],
             )
 
@@ -170,7 +171,7 @@ class DecoderOnlyBase(lightning.LightningModule, ABC):
         word_codes = []
         generated_text = "\n"
         # Start with 1 padding.
-        context = [50259]
+        context = [tokenizer.pad_token_id]
 
         # Fill context with recipe.
         if beginning:
@@ -248,7 +249,7 @@ class DecoderOnlyBase(lightning.LightningModule, ABC):
                 word_code = torch.multinomial(probs, num_samples=1).item()
                 
                 # Don't add padding.
-                if word_code == 50259:
+                if word_code == tokenizer.pad_token_id:
                     continue
                 
                 context.append(word_code)
@@ -258,7 +259,7 @@ class DecoderOnlyBase(lightning.LightningModule, ABC):
                 word_codes.append(word_code)
 
                 # Make text look nicer.
-                next_text = enc.decode([word_code]).replace("<|padding|>", "")\
+                next_text = tokenizer.decode([word_code]).replace("<|padding|>", "")\
                                                     .replace("<|ingredients_end|>", "\n\nInstructions:\n")\
                                                     .replace("<|endoftext|>", "\n\n")\
                                                     .replace("<|next_step|>", "\n")\
@@ -269,7 +270,7 @@ class DecoderOnlyBase(lightning.LightningModule, ABC):
                 generated_text += next_text
 
                 # End of text token reached. Stop.
-                if word_code == 50256:
+                if word_code == tokenizer.eos_token_id:
                     break
             except KeyboardInterrupt as e:
                 # Stop on keyboard interrupt.
@@ -278,14 +279,253 @@ class DecoderOnlyBase(lightning.LightningModule, ABC):
         
         return generated_text
     
+class EncoderDecoderModuleBase(lightning.LightningModule):
+    def step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int, log_name: str) -> torch.Tensor:
+        """Performs a training or validation step.
 
+        Args:
+            batch (Tuple[torch.Tensor, torch.Tensor]): The batch of data.
+            batch_idx (int): The index of the batch.
+            mode (str): The mode of the step.
 
+        Returns:
+            torch.Tensor: The loss of the batch.
+        """
+        # Get the input and target.
+        encoder_input = batch[0]
+        input = batch[1][:, :-1]
+        target = batch[1][:, 1:]
 
+        test_encoder = tokenizer.decode(encoder_input[0])
+        test_input = tokenizer.decode(input[0])
+        test_target = tokenizer.decode(target[0])
 
+        # Perform a forward pass.
+        output = self(encoder_input, input)
 
+        # If the model returns a list, take the first element. Those are the logits.
+        if type(output) is list or type(output) is tuple:
+            output = output[0]
+        
+        B, T, C = output.shape
+        target = target.reshape(B*T)
+        output = output.reshape(B*T, C)
 
+        # Calculate the loss.
+        loss = nn.functional.cross_entropy(output, target, ignore_index=tokenizer.pad_token_id)
 
+        # Log the loss.
+        self.log(log_name, loss, prog_bar=True, logger=True)
 
+        return loss
+
+    def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
+        """Performs a training step.
+
+        Args:
+            batch (Tuple[torch.Tensor, torch.Tensor]): The batch of data.
+            batch_idx (int): The index of the batch.
+
+        Returns:
+            torch.Tensor: The loss of the batch.
+        """
+        return self.step(batch, batch_idx, "train_loss")
+    
+    def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
+        """Performs a validation step.
+
+        Args:
+            batch (Tuple[torch.Tensor, torch.Tensor]): The batch of data.
+            batch_idx (int): The index of the batch.
+
+        Returns:
+            torch.Tensor: The loss of the batch.
+        """
+        return self.step(batch, batch_idx, "val_loss")
+    
+    def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
+        """Performs a test step.
+
+        Args:
+            batch (Tuple[torch.Tensor, torch.Tensor]): The batch of data.
+            batch_idx (int): The index of the batch.
+
+        Returns:
+            torch.Tensor: The loss of the batch.
+        """
+        return self.step(batch, batch_idx, "test_loss")
+    
+    def configure_optimizers(self) -> Tuple[List[torch.optim.Optimizer], List[torch.optim.lr_scheduler._LRScheduler]]:
+        """Configures the optimizer and scheduler.
+
+        Returns:
+            Tuple[List[torch.optim.Optimizer], List[torch.optim.lr_scheduler._LRScheduler]]: The optimizer and scheduler.
+        """
+        self.optimizer = torch.optim.AdamW(self.parameters(), lr=1e-4)
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=5, factor=0.1, verbose=True)
+        self.monitor = "val_loss"
+        return {"optimizer": self.optimizer, "lr_scheduler": {
+                "scheduler": self.scheduler,
+                "monitor": self.monitor,
+                "interval": "step",
+                "frequency": 500
+            }}
+    
+    def optuna_optimize(self, train_dataset: torch.utils.data.Dataset, val_dataset: torch.utils.data.Dataset, n_trials: int = 10, n_jobs: int = 1, time_per_trial: str = "00:00:07:30") -> Tuple[Dict[str, Any], float]:
+        """Optimizes the model using optuna.
+
+        Args:
+            model (lightning.LightningModule): The model to optimize.
+            train_dataset (torch.utils.data.Dataset): The training dataset.
+            val_dataset (torch.utils.data.Dataset): The validation dataset.
+            n_trials (int, optional): The amount of trials to run. Defaults to 10.
+            n_jobs (int, optional): The amount of jobs to run in parallel. Defaults to 1.
+
+        Returns:
+            Tuple[Dict[str, Any], float]: The best parameters and the best score.
+        """
+        def objective(trial: optuna.Trial) -> float:
+            """The objective function to optimize.
+
+            Args:
+                trial (optuna.Trial): The trial.
+
+            Returns:
+                float: The score to optimize.
+            """
+            # Get the parameters to optimize.
+            parameters = self.get_optuna_parameters(trial)
+            trial_model = type(self)(*parameters)
+            
+            # Create the trainer.
+            trainer = lightning.Trainer(
+                logger=True,
+                deterministic=True, max_time=time_per_trial,
+                enable_checkpointing=False,
+                val_check_interval=500,
+                callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss")],
+            )
+
+            # Train the model.
+            trainer.fit(trial_model, train_dataset, val_dataset)
+
+            # Return the best score.
+            return trainer.callback_metrics["val_loss"]
+
+        # Create the study.
+        study = optuna.create_study(direction="minimize", pruner=optuna.pruners.MedianPruner())
+        # Optimize the study.
+        study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, catch=(RuntimeError))
+
+        # Return the best parameters and the best score.
+        return study.best_params, study.best_value
+    
+    @torch.no_grad()
+    def generate(self, encoder_text: str = None, print_live: bool = True, temperature: float = 1.0, top_k: int = -1, top_p: float = 1.0) -> str:
+        """Generates text using the model. If a beginning is specified, the model will continue the text. Otherwise, it will generate a new text.
+        The model will generate text until it reaches the end token. This may never happen if the model is not trained well enough.
+
+        Args:
+            encoder_text (str, optional): The text to use as the encoder input. Defaults to None.
+            print_live (bool, optional): Whether to print the generated text live. Defaults to True.
+            temperature (float, optional): The temperature to use when generating text. Defaults to 1.0. Higher values will result in more random text.
+            top_k (int, optional): The amount of top k words to use when generating text. Defaults to -1. This will use all words.
+            top_p (float, optional): The probability to use when generating text. Defaults to 1.0. Higher values will result in more random text.
+        Returns:
+            str: The generated text.
+        """
+        self.eval()
+        self.cuda()
+
+        word_codes = []
+        generated_text = "\n"
+        # Start with start token.
+        context = [tokenizer.pad_token_id]
+
+        # Fill context with recipe.
+        #encoder_text = encode_texts([encoder_text])
+        # Shape into source length.
+        encoder_text = tokenizer(encoder_text, max_length=self.source_length - 1, truncation=True, padding=True).data['input_ids']
+        encoder_text = torch.tensor(add_start_tokens([encoder_text])).to(self.device)
+        
+        states = []
+
+        while True:
+            try:
+                # Model generated result for every index of context. We only need the last one.
+                logits = self.forward(encoder_text, torch.tensor([context]).to(self.device), *states)
+
+                # If the model returns a list, take the first element. Those are the logits. The rest are states for the next iteration.
+                if type(logits) is list or type(logits) is tuple:
+                    states = logits[1:]
+                    logits = logits[0]
+
+                # Take the last logit, which is the one for the last token.
+                last_logit = logits[-1, -1, :]
+
+                # Sample from the logits. This is the next token. The higher the temperature, the more random the text will be.
+                probs = torch.nn.functional.softmax(last_logit / temperature, dim=0)
+
+                # Take the top k words. This will set all other words to 0.
+                if top_k > 0:
+                    top_k = min(top_k, probs.size(-1))
+                    top_k_probs, top_k_indices = torch.topk(probs, top_k)
+                    probs = torch.zeros_like(probs).scatter_(0, top_k_indices, top_k_probs)
+                    probs = probs / torch.sum(probs)
+
+                # Take the top p words.
+                if top_p < 1.0:
+                    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+                    cumulative_probs = torch.cumsum(sorted_probs, dim=0)
+                    cumulative_mask = cumulative_probs > top_p
+
+                    # Shift the mask to the right to keep the first token above the threshold.
+                    cumulative_mask[..., 1:] = cumulative_mask[..., :-1].clone()
+                    # Set the first token to False, because it should always be included.
+                    cumulative_mask[0] = False
+
+                    sorted_probs = sorted_probs.masked_fill(cumulative_mask, 0.0)
+
+                    # If all probabilities are 0, set the first one to 1.0.
+                    if sorted_probs[0] == 0.0:
+                        sorted_probs[0] = 1.0
+
+                    probs = torch.zeros_like(probs).scatter_(0, sorted_indices, sorted_probs)
+                    probs = probs / torch.sum(probs)
+
+                word_code = torch.multinomial(probs, num_samples=1).item()
+                
+                # Don't add padding.
+                if word_code == tokenizer.pad_token_id:
+                    continue
+                
+                context.append(word_code)
+                if len(context) > self.target_length:
+                    context = context[1:]
+                    
+                word_codes.append(word_code)
+
+                # Make text look nicer.
+                next_text = tokenizer.decode([word_code]).replace("<|padding|>", "")\
+                                                    .replace("<|ingredients_end|>", "\n\nInstructions:\n")\
+                                                    .replace("<|endoftext|>", "\n\n")\
+                                                    .replace("<|next_step|>", "\n")\
+                                                    .replace("\r", "\n")
+                
+                if print_live:
+                    print(next_text, end="")
+                generated_text += next_text
+
+                # End of text token reached. Stop.
+                if word_code == tokenizer.eos_token_id:
+                    break
+            except KeyboardInterrupt as e:
+                # Stop on keyboard interrupt.
+                print()
+                break
+        
+        generated_text = tokenizer.decode(word_codes)
+        return generated_text
 
 
 from pytorch_lightning import LightningModule
@@ -314,6 +554,7 @@ class PyTorchLightningPruningCallback(Callback):
 
         self._trial = trial
         self.monitor = monitor
+        self.step = 0
 
     def on_validation_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         # When the trainer calls `on_validation_end` for sanity check,
@@ -322,8 +563,6 @@ class PyTorchLightningPruningCallback(Callback):
         # https://github.com/PyTorchLightning/pytorch-lightning/issues/1391.
         if trainer.sanity_checking:
             return
-
-        epoch = pl_module.current_epoch
 
         current_score = trainer.callback_metrics.get(self.monitor)
         if current_score is None:
@@ -334,7 +573,8 @@ class PyTorchLightningPruningCallback(Callback):
             print(message)
             return
 
-        self._trial.report(current_score, step=epoch)
+        self._trial.report(current_score, step=self.step)
         if self._trial.should_prune():
-            message = "Trial was pruned at epoch {}.".format(epoch)
+            message = "Trial was pruned at epoch {}.".format(self.step)
             raise optuna.TrialPruned(message)
+        self.step += 1

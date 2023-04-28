@@ -6,6 +6,8 @@ from Data.data import *
 import tqdm
 import time
 import math
+import pytorch_lightning as lightning
+from Models.Instructions.ModuleBase import EncoderDecoderModuleBase
 
 
 class SelfAttentionHead(nn.Module):
@@ -69,8 +71,12 @@ class MultiHeadedAttention(nn.Module):
 
         #self.heads = nn.ModuleList([SelfAttentionHead(head_size, embedding_dimension, dropout) for i in range(heads)])
 
+        self.key = nn.Linear(embedding_dimension, embedding_dimension, bias=False)
+        self.query = nn.Linear(embedding_dimension, embedding_dimension, bias=False)
+        self.value = nn.Linear(embedding_dimension, embedding_dimension, bias=False)
+
         # Key, query and value projections in one linear layer.
-        self.self_attention = nn.Linear(embedding_dimension, 3 * embedding_dimension)
+        #self.self_attention = nn.Linear(embedding_dimension, 3 * embedding_dimension)
         self.projection = nn.Linear(embedding_dimension, embedding_dimension)
         self.dropout_layer = nn.Dropout(dropout)
 
@@ -86,19 +92,22 @@ class MultiHeadedAttention(nn.Module):
         """
         # Concatenate the results of all heads.
         if encoder_output is not None:
-            x = torch.cat((encoder_output, x), dim=1)
+            q, k, v = self.query(x), self.key(encoder_output), self.value(encoder_output)
+        else:
+            q, k, v = self.query(x), self.key(x), self.value(x)
 
-        B, T, C = x.shape # Batch size, sequence length, embedding dimension.
-        q, k, v = self.self_attention(x).chunk(3, dim=-1) # Split the concatenated tensor into three tensors.
+        Bq, Tq, Cq = q.shape # Batch size, sequence length, embedding dimension.
+        Bk, Tk, Ck = k.shape # Batch size, sequence length, embedding dimension.
+        Bv, Tv, Cv = v.shape # Batch size, sequence length, embedding dimension.
 
         # Split the tensors into multiple heads.
-        k = k.view(B, T, self.n_heads, C // self.n_heads).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_heads, C // self.n_heads).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_heads, C // self.n_heads).transpose(1, 2) # (B, nh, T, hs)
+        k = k.view(Bk, Tk, self.n_heads, Ck // self.n_heads).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(Bq, Tq, self.n_heads, Cq // self.n_heads).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(Bv, Tv, self.n_heads, Cv // self.n_heads).transpose(1, 2) # (B, nh, T, hs)
 
         out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=self.is_causal)
         # Concatenate the heads.
-        out = out.transpose(1, 2).contiguous().view(B, T, C)
+        out = out.transpose(1, 2).contiguous().view(Bq, Tq, Cv)
         out = self.dropout_layer(self.projection(out))
         return out
 
@@ -239,10 +248,10 @@ class DecoderBlock(nn.Module):
 
         return feed_forward
 
-class EncoderDecoderTransformer(nn.Module):
+class EncoderDecoderTransformer(EncoderDecoderModuleBase):
     """Encoder decoder transformer model. This model consists of an embedding layer, an encoder and a decoder.
     """
-    def __init__(self, blocks: int, neurons: int, embedding_dimension: int, heads: int, dropout: float, vocabulary_size: int):
+    def __init__(self, source_length: int, target_length: int, blocks: int, neurons: int, embedding_dimension: int, heads: int, dropout: float, vocabulary_size: int):
         """Initializes a multi layer perception model with the specified arguments.
 
         Args:
@@ -254,14 +263,19 @@ class EncoderDecoderTransformer(nn.Module):
             vocabulary_size (int): The size of the vocabulary.
         """
         super().__init__()
+        self.save_hyperparameters()
         self.embedding_dimension = embedding_dimension
         self.blocks = blocks
         self.heads = heads
         self.dropout = dropout
         self.neurons = neurons
+        self.source_length = source_length
+        self.target_length = target_length
         self.embedding = nn.Embedding(vocabulary_size, self.embedding_dimension)
         self.encodings = nn.ModuleList([EncoderBlock(self.neurons, self.embedding_dimension, self.heads, self.dropout) for _ in range(blocks)])
         self.decodings = nn.ModuleList([DecoderBlock(self.neurons, self.embedding_dimension, self.heads, self.dropout) for _ in range(blocks)])
+        # Positional encoding for the source input.
+        self.pos_encodings = nn.Parameter(self._get_pos_encoding(max(source_length, target_length)), requires_grad=False)
         self.norm = nn.LayerNorm(self.embedding_dimension)
         self.linear = nn.Linear(self.embedding_dimension, vocabulary_size)
 
@@ -277,21 +291,17 @@ class EncoderDecoderTransformer(nn.Module):
             torch.Tensor: The output tensor.
         """
         B, T = src.shape
-        embedding = self.embedding(src)
 
         # Add positional encoding to the input using the sine and cosine functions.
-        seq_length = src.size(1)
-        pos_encodings = self._get_pos_encoding(seq_length, embedding.device)
-        input_embeddings = embedding + pos_encodings
-
-        # Add positional encoding to the tgt.
-        seq_length = tgt.size(1)
-        pos_encodings = self._get_pos_encoding(seq_length, embedding.device)
-        target_embedding = self.embedding(tgt) + pos_encodings
+        input_embeddings = self.embedding(src) + self.pos_encodings[:T]
 
         # Apply the encoder blocks.
         for i in range(self.blocks):
             input_embeddings = self.encodings[i](input_embeddings)
+
+        # Add positional encoding to the tgt.
+        B, T = tgt.shape
+        target_embedding = self.embedding(tgt) + self.pos_encodings[:T]
         
         # Apply the decoder blocks.
         for i in range(self.blocks):
@@ -305,7 +315,7 @@ class EncoderDecoderTransformer(nn.Module):
 
         return output
     
-    def _get_pos_encoding(self, seq_length, device):
+    def _get_pos_encoding(self, seq_length):
         """Returns the positional encoding for the specified sequence length.
 
         Args:
@@ -315,9 +325,9 @@ class EncoderDecoderTransformer(nn.Module):
         Returns:
             torch.Tensor: The positional encoding.
         """
-        pos_encodings = torch.zeros(seq_length, self.embedding_dimension).to(device)
-        for pos in range(seq_length):
-            for i in range(0, self.embedding_dimension, 2):
-                pos_encodings[pos, i] = math.sin(pos / (10000 ** ((2 * i)/self.embedding_dimension)))
-                pos_encodings[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1))/self.embedding_dimension)))
+        pos = torch.arange(seq_length, dtype=torch.float).reshape(-1, 1)
+        div_term = torch.exp(torch.arange(0, self.embedding_dimension, 2, dtype=torch.float) * -(math.log(10000.0) / self.embedding_dimension))
+        pos_encodings = torch.zeros(seq_length, self.embedding_dimension)
+        pos_encodings[:, 0::2] = torch.sin(pos * div_term)
+        pos_encodings[:, 1::2] = torch.cos(pos * div_term)
         return pos_encodings
