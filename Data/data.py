@@ -29,13 +29,14 @@ class EncoderDecoderDataset(torch.utils.data.Dataset):
 
 
 class SummarizationDataset(lightning.LightningDataModule):
-    def __init__(self, batch_size: int = 8, encoder_input_length: int = 512, decoder_input_length: int = 128, samples: int = 2000, **kwargs):
+    def __init__(self, prefixes: List[str] = [None, None], batch_size: int = 8, encoder_input_length: int = 512, decoder_input_length: int = 128, samples: int = 2000, **kwargs):
         super().__init__()
         self.batch_size = batch_size
         self.max_source_length = encoder_input_length
         # +1 because the decoder is used as both input and output, shifted by 1.
         self.max_target_length = decoder_input_length + 1
         self.samples = samples
+        self.prefixes = prefixes
         self.save_hyperparameters()
 
     def setup(self, stage):
@@ -45,12 +46,12 @@ class SummarizationDataset(lightning.LightningDataModule):
             self.train_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
             
             self.val_dataset = load_dataset("cnn_dailymail", "3.0.0", split="validation").remove_columns(["id"])[:1000]
-            self.val_dataset = EncoderDecoderDataset(add_start_tokens(tokenizer(self.val_dataset["article"], max_length=self.max_source_length - 1, padding=True, truncation=True).data["input_ids"]),\
-                                                        add_start_tokens(tokenizer(self.val_dataset["highlights"], max_length=self.max_target_length - 1, padding=True, truncation=True).data["input_ids"]))
+            tokenized = self.tokenize_iteratively(self.val_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["article", "highlights"])
+            self.val_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
         elif stage == "test":
             self.test_dataset = load_dataset("cnn_dailymail", "3.0.0", split="test").remove_columns(["id"])[:1000]
-            self.test_dataset = EncoderDecoderDataset(add_start_tokens(tokenizer(self.test_dataset["article"], max_length=self.max_source_length - 1, padding=True, truncation=True).data["input_ids"]),\
-                                                        add_start_tokens(tokenizer(self.test_dataset["highlights"], max_length=self.max_target_length - 1, padding=True, truncation=True).data["input_ids"]))
+            tokenized = self.tokenize_iteratively(self.test_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["article", "highlights"])
+            self.test_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
     
     def tokenize_iteratively(self, dataset: Dataset, max_lengths: List[int], columns: List[str], step_size: int = 1000, column_first: bool = True, **kwargs) -> List[List[int]]:
         """Tokenizes a dataset in steps of step_size to avoid memory errors. Returns a list of tokenized columns.
@@ -59,7 +60,8 @@ class SummarizationDataset(lightning.LightningDataModule):
             dataset (Dataset): The dataset to tokenize.
             max_lengths (List[int]): The maximum lengths of the tokenized columns.
             columns (List[str]): The columns to tokenize.
-
+            step_size (int, optional): The step size to tokenize the dataset in. Defaults to 1000.
+            column_first (bool, optional): Whether the columns are the first dimension of the dataset. Defaults to True.
         Returns:
             List[List[int]]: The tokenized columns.
         """
@@ -73,7 +75,12 @@ class SummarizationDataset(lightning.LightningDataModule):
                     data = dataset[column][i:i+step_size]
                 else:
                     data = [data_point[column] for data_point in dataset[i:i+step_size]]
-                tokenized[j].extend(add_start_tokens(tokenizer(data, max_length=max_lengths[j], padding=True, truncation=True, **kwargs).data["input_ids"]))
+
+                prefix = self.prefixes[j]
+                if prefix is not None:
+                    data = [prefix + data_point for data_point in data]
+
+                tokenized[j].extend(add_start_tokens(tokenizer(data, max_length=max_lengths[j], padding="max_length", truncation=True, **kwargs).data["input_ids"]))
 
         return tokenized
 
@@ -90,8 +97,8 @@ class SummarizationDataset(lightning.LightningDataModule):
         return torch.utils.data.DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False)
     
 class TranslationDataset(SummarizationDataset):
-    def __init__(self, batch_size: int = 8, encoder_input_length: int = 64, decoder_input_length: int = 64, samples: int = 2000, **kwargs):
-        super().__init__(batch_size, encoder_input_length, decoder_input_length, samples, **kwargs)
+    def __init__(self, prefixes: List[str] = [None, None], batch_size: int = 8, encoder_input_length: int = 64, decoder_input_length: int = 64, samples: int = 2000, **kwargs):
+        super().__init__(batch_size, prefixes, encoder_input_length, decoder_input_length, samples, **kwargs)
 
     def setup(self, stage):
         if stage == "fit":
@@ -199,7 +206,7 @@ def create_sliding(corpus: List[List[Any]], n: int = 2, pad_code: int = 50259, r
     return data
 
 
-def add_start_tokens(text: List[int]) -> List[int]:
+def add_start_tokens(text: List[int], start_tokens: List[int] = [tokenizer.pad_token_id]) -> List[int]:
     return [[tokenizer.pad_token_id] + t for t in text]
 
 

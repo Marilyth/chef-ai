@@ -7,6 +7,7 @@ import Models.Instructions.GRU
 import Models.Instructions.GRUTorch
 import Models.Instructions.EncoderDecoder
 import Models.Instructions.EncoderDecoderTorch
+import Models.Instructions.FineTunedT5
 from Data import data
 import torch
 import pytorch_lightning as lightning
@@ -16,9 +17,9 @@ import os
 # Installing pytorch with CUDA is weird, check https://pytorch.org/ for instructions.
 
 if __name__ == "__main__":
-    model_type = input("Please choose a model type (Transformer, RNNTorch, RNN, LSTMTorch, LSTM, GRUTorch, GRU, EncoderDecoder, EncoderDecoderTorch): ")
-    encoder_length = 64
-    context_length = 64
+    model_type = input("Please choose a model type (Transformer, RNNTorch, RNN, LSTMTorch, LSTM, GRUTorch, GRU, EncoderDecoder, EncoderDecoderTorch, T5): ")
+    encoder_length = 512
+    context_length = 128
     torch.manual_seed(42)
     lightning.seed_everything(42)
 
@@ -40,6 +41,8 @@ if __name__ == "__main__":
         model = Models.Instructions.EncoderDecoder.EncoderDecoderTransformer(encoder_length, context_length, 4, 500, 700, 2, 0.0, data.tokenizer.vocab_size)
     elif model_type == "EncoderDecoderTorch":
         model = Models.Instructions.EncoderDecoderTorch.EncoderDecoderTransformerTorch(encoder_length, context_length, 4, 2048, 512, 2, 0.0, data.tokenizer.vocab_size)
+    elif model_type == "T5":
+        model = Models.Instructions.FineTunedT5.FineTunedT5()
 
     mode = input("Please choose a mode (train, test, optuna): ")
     if mode == "test":
@@ -64,7 +67,7 @@ if __name__ == "__main__":
         trainer = lightning.Trainer(deterministic=True, callbacks=[checkpointer], val_check_interval=500)
 
         # Load datasets and split them into train, validation and test sets.
-        dataset = data.TranslationDataset(encoder_input_length=encoder_length, decoder_input_length=context_length, samples=250000)
+        dataset = data.SummarizationDataset(encoder_input_length=encoder_length, decoder_input_length=context_length, samples=250000, batch_size=4)
 
         # Load checkpoint if wanted and the file exists.
         if os.path.isfile("checkpoints/" + type(model).__name__ + ".ckpt") and input("Do you want to load a checkpoint? (y/n): ") == "y":
