@@ -73,7 +73,7 @@ if __name__ == "__main__":
                     generation_input += "\n" + new_input
 
                 model.generate(generation_input, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p), compression=int(compression), print_live=True)
-            except:
+            except Exception as e:
                 continue
             
     elif mode == "train":

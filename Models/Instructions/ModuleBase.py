@@ -521,11 +521,11 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
                                         overlap = i
 
                                 # Print the new part.
-                                print(current_text[overlap:].rstrip(), end="")
+                                print(current_text[overlap:].rstrip(",?! \"'.\n"), end="")
                                 if overlap == 0:
                                     print()
 
-                            printed_text = current_text.rstrip()
+                            printed_text = current_text.rstrip(",?! \"'.\n")
 
                         # End of text token reached. Stop.
                         if word_code == tokenizer.eos_token_id:
