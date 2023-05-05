@@ -3,6 +3,7 @@ import os
 import shutil
 import pandas
 import json
+import re
 import inflect
 import csv
 import requests
@@ -204,6 +205,32 @@ def create_sliding(corpus: List[List[Any]], n: int = 2, pad_code: int = 50259, r
                 break
     
     return data
+
+
+def chunk_text(text: str, max_chunk_length: int = 256) -> List[str]:
+    """Chunks a text into smaller pieces, so that it fits into the transformer's input size.
+    The text is split at the end of a sentence, so that the chunks are still readable.
+    Iterating over chunks is a simple way to process large texts.
+
+    Args:
+        text (str): The text to chunk.
+        max_chunk_length (int, optional): The maximum words per chunk. Defaults to 256.
+
+    Returns:
+        List[str]: The list of chunks.
+    """
+    chunks = []
+    chunk = ""
+
+    for sentence in re.split("([^.?!]+[.?!]+)", text):
+        word_count = (chunk + sentence).count(" ") + 1
+        if word_count > max_chunk_length:
+            chunks.append(chunk.strip())
+            chunk = ""
+        chunk += sentence
+
+    chunks.append(chunk)
+    return chunks
 
 
 def add_start_tokens(text: List[int], start_tokens: List[int] = [tokenizer.pad_token_id]) -> List[int]:

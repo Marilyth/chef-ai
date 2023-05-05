@@ -49,18 +49,33 @@ if __name__ == "__main__":
         model = model.load_from_checkpoint("checkpoints/" + type(model).__name__ + ".ckpt")
 
         while True:
-            temperature = input("Please provide a temperature, the default is 1.0: ")
-            if temperature == "":
-                temperature = 1.0
-            top_k = input("Please provide a top_k, the default is -1: ")
-            if top_k == "":
-                top_k = -1
-            top_p = input("Please provide a top_p, the default is 1: ")
-            if top_p == "":
-                top_p = 1
+            try:
+                temperature = input("Please provide a temperature, the default is 1.0: ")
+                if temperature == "":
+                    temperature = 1.0
+                top_k = input("Please provide a top_k, the default is -1: ")
+                if top_k == "":
+                    top_k = -1
+                top_p = input("Please provide a top_p, the default is 1: ")
+                if top_p == "":
+                    top_p = 1
+                compression = input("Please provide a compression value, the default is 0: ")
+                if compression == "":
+                    compression = 0
 
-            generation_input = input("If you want, you can provide a beginning for the text generation now: ")
-            print(model.generate(generation_input, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p), print_live=False))
+                # Take multiline input until the user enters eof.
+                generation_input = input("If you want, you can provide a beginning for the text generation now: ")
+                while True:
+                    new_input = input()
+                    if new_input.lower() == "eof":
+                        break
+
+                    generation_input += "\n" + new_input
+
+                model.generate(generation_input, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p), compression=int(compression), print_live=True)
+            except:
+                continue
+            
     elif mode == "train":
         # Create a trainer and a checkpointer.
         checkpointer = callbacks.ModelCheckpoint(monitor="val_loss", mode="min", dirpath="checkpoints", filename=type(model).__name__)

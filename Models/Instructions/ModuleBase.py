@@ -421,110 +421,125 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
         return study.best_params, study.best_value
     
     @torch.no_grad()
-    def generate(self, encoder_text: str = None, print_live: bool = True, temperature: float = 1.0, top_k: int = -1, top_p: float = 1.0) -> str:
+    def generate(self, encoder_text: str = None, temperature: float = 1.0, top_k: int = -1, top_p: float = 1.0, compression: int = 0, print_live: bool = False) -> str:
         """Generates text using the model. If a beginning is specified, the model will continue the text. Otherwise, it will generate a new text.
         The model will generate text until it reaches the end token. This may never happen if the model is not trained well enough.
 
         Args:
             encoder_text (str, optional): The text to use as the encoder input. Defaults to None.
-            print_live (bool, optional): Whether to print the generated text live. Defaults to True.
             temperature (float, optional): The temperature to use when generating text. Defaults to 1.0. Higher values will result in more random text.
             top_k (int, optional): The amount of top k words to use when generating text. Defaults to -1. This will use all words.
             top_p (float, optional): The probability to use when generating text. Defaults to 1.0. Higher values will result in more random text.
+            compression (int, optional): The amount of compression to use when generating text, i.e. the amount of times to loop over the generated output. Defaults to 0.
         Returns:
             str: The generated text.
         """
         self.eval()
         self.cuda()
-
-        word_codes = []
-        generated_text = "\n"
-        # Start with start token.
-        context = [tokenizer.pad_token_id]
-
-        # Fill context with recipe.
-        #encoder_text = encode_texts([encoder_text])
-        # Shape into source length.
-        encoder_text = tokenizer(encoder_text, max_length=self.source_length - 1, truncation=True, padding=True).data['input_ids']
-        encoder_text = torch.tensor(add_start_tokens([encoder_text])).to(self.device)
         
-        states = []
+        for loop in tqdm.tqdm(range(compression + 1), desc="Iteration", disable=print_live):
+            word_codes = []
+            printed_text = ""
+            for chunk in tqdm.tqdm(chunk_text(encoder_text), desc="Generating", disable=print_live):
+                generated_text = "\n"
+                # Start with start token.
+                context = [tokenizer.pad_token_id]
 
-        while True:
-            try:
-                # Model generated result for every index of context. We only need the last one.
-                logits = self.forward(encoder_text, torch.tensor([context]).to(self.device), *states)
-
-                # If the model returns a list, take the first element. Those are the logits. The rest are states for the next iteration.
-                if type(logits) is list or type(logits) is tuple:
-                    states = logits[1:]
-                    logits = logits[0]
-
-                # Take the last logit, which is the one for the last token.
-                last_logit = logits[-1, -1, :]
-
-                # Sample from the logits. This is the next token. The higher the temperature, the more random the text will be.
-                probs = torch.nn.functional.softmax(last_logit / temperature, dim=0)
-
-                # Take the top k words. This will set all other words to 0.
-                if top_k > 0:
-                    top_k = min(top_k, probs.size(-1))
-                    top_k_probs, top_k_indices = torch.topk(probs, top_k)
-                    probs = torch.zeros_like(probs).scatter_(0, top_k_indices, top_k_probs)
-                    probs = probs / torch.sum(probs)
-
-                # Take the top p words.
-                if top_p < 1.0:
-                    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-                    cumulative_probs = torch.cumsum(sorted_probs, dim=0)
-                    cumulative_mask = cumulative_probs > top_p
-
-                    # Shift the mask to the right to keep the first token above the threshold.
-                    cumulative_mask[..., 1:] = cumulative_mask[..., :-1].clone()
-                    # Set the first token to False, because it should always be included.
-                    cumulative_mask[0] = False
-
-                    sorted_probs = sorted_probs.masked_fill(cumulative_mask, 0.0)
-
-                    # If all probabilities are 0, set the first one to 1.0.
-                    if sorted_probs[0] == 0.0:
-                        sorted_probs[0] = 1.0
-
-                    probs = torch.zeros_like(probs).scatter_(0, sorted_indices, sorted_probs)
-                    probs = probs / torch.sum(probs)
-
-                word_code = torch.multinomial(probs, num_samples=1).item()
+                # Fill context with recipe.
+                #encoder_text = encode_texts([encoder_text])
+                # Shape into source length.
+                encoder_tokens = tokenizer(chunk, max_length=self.source_length - 1, truncation=True, padding=True).data['input_ids']
+                encoder_tokens = torch.tensor(add_start_tokens([encoder_tokens])).to(self.device)
                 
-                # Don't add padding.
-                if word_code == tokenizer.pad_token_id:
-                    continue
-                
-                context.append(word_code)
-                if len(context) > self.target_length:
-                    context = context[1:]
-                    
-                word_codes.append(word_code)
+                states = []
 
-                # Make text look nicer.
-                next_text = tokenizer.decode([word_code]).replace("<|padding|>", "")\
-                                                    .replace("<|ingredients_end|>", "\n\nInstructions:\n")\
-                                                    .replace("<|endoftext|>", "\n\n")\
-                                                    .replace("<|next_step|>", "\n")\
-                                                    .replace("\r", "\n")
-                
-                if print_live:
-                    print(next_text, end="")
-                generated_text += next_text
+                while True:
+                    try:
+                        # Model generated result for every index of context. We only need the last one.
+                        logits = self.forward(encoder_tokens, torch.tensor([context]).to(self.device), *states)
 
-                # End of text token reached. Stop.
-                if word_code == tokenizer.eos_token_id:
-                    break
-            except KeyboardInterrupt as e:
-                # Stop on keyboard interrupt.
-                print()
-                break
-        
-        generated_text = tokenizer.decode(word_codes)
+                        # If the model returns a list, take the first element. Those are the logits. The rest are states for the next iteration.
+                        if type(logits) is list or type(logits) is tuple:
+                            states = logits[1:]
+                            logits = logits[0]
+
+                        # Take the last logit, which is the one for the last token.
+                        last_logit = logits[-1, -1, :]
+
+                        # Sample from the logits. This is the next token. The higher the temperature, the more random the text will be.
+                        probs = torch.nn.functional.softmax(last_logit / temperature, dim=0)
+
+                        # Take the top k words. This will set all other words to 0.
+                        if top_k > 0:
+                            top_k = min(top_k, probs.size(-1))
+                            top_k_probs, top_k_indices = torch.topk(probs, top_k)
+                            probs = torch.zeros_like(probs).scatter_(0, top_k_indices, top_k_probs)
+                            probs = probs / torch.sum(probs)
+
+                        # Take the top p words.
+                        if top_p < 1.0:
+                            sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+                            cumulative_probs = torch.cumsum(sorted_probs, dim=0)
+                            cumulative_mask = cumulative_probs > top_p
+
+                            # Shift the mask to the right to keep the first token above the threshold.
+                            cumulative_mask[..., 1:] = cumulative_mask[..., :-1].clone()
+                            # Set the first token to False, because it should always be included.
+                            cumulative_mask[0] = False
+
+                            sorted_probs = sorted_probs.masked_fill(cumulative_mask, 0.0)
+
+                            # If all probabilities are 0, set the first one to 1.0.
+                            if sorted_probs[0] == 0.0:
+                                sorted_probs[0] = 1.0
+
+                            probs = torch.zeros_like(probs).scatter_(0, sorted_indices, sorted_probs)
+                            probs = probs / torch.sum(probs)
+
+                        word_code = torch.multinomial(probs, num_samples=1).item()
+                        
+                        # Don't add padding.
+                        if word_code == tokenizer.pad_token_id:
+                            continue
+                        
+                        context.append(word_code)
+                        if len(context) > self.target_length:
+                            context = context[1:]
+                            
+                        word_codes.append(word_code)
+
+                        # Print the generated text so far. Only print the new part.
+                        if print_live:
+                            current_text = tokenizer.decode(word_codes[-10:]).replace("</s>", "\n")
+                            if printed_text == "":
+                                print(current_text, end="")
+                            else:
+                                # Find the overlap between the current text and the printed text.
+                                overlap = 0
+                                for i in range(1, len(printed_text) + 1):
+                                    if current_text.startswith(printed_text[-i:]):
+                                        overlap = i
+
+                                # Print the new part.
+                                print(current_text[overlap:].rstrip(), end="")
+                                if overlap == 0:
+                                    print()
+
+                            printed_text = current_text.rstrip()
+
+                        # End of text token reached. Stop.
+                        if word_code == tokenizer.eos_token_id:
+                            break
+                    except KeyboardInterrupt as e:
+                        # Stop on keyboard interrupt.
+                        print()
+                        break
+            
+            generated_text = tokenizer.decode(word_codes).replace("</s>", "\n")
+            encoder_text = generated_text
+
+            if print_live:
+                print("\n\n")
         return generated_text
 
 

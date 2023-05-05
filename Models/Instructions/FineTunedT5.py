@@ -9,6 +9,8 @@ class FineTunedT5(EncoderDecoderModuleBase):
         super().__init__()
         # Pretrained T5 model without a head.
         self.model = T5Model.from_pretrained("t5-small")
+        self.source_length = self.model.config.n_positions
+        self.target_length = self.model.config.n_positions
 
         # Add a simple MLP on top of the model to learn to convert the T5 output to the vocabulary.
         # This can also be a single layer, but the performance is better with a more complex structure.
@@ -21,6 +23,8 @@ class FineTunedT5(EncoderDecoderModuleBase):
         # If all layers are frozen, training is much faster, but the performance might suffer.
         for param in self.model.base_model.parameters():
             param.requires_grad = False
+
+        self.save_hyperparameters()
     
     def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
         # Get the last hidden state from the T5 model.
