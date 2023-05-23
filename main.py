@@ -8,6 +8,9 @@ import Models.Instructions.GRUTorch
 import Models.Instructions.EncoderDecoder
 import Models.Instructions.EncoderDecoderTorch
 import Models.Instructions.FineTunedT5
+import Models.Instructions.FineTunedBart
+import Models.Instructions.FineTunedLongformer
+import Models.Instructions.FineTunedBigBirdPegasus
 from Data import data
 import torch
 import pytorch_lightning as lightning
@@ -17,9 +20,9 @@ import os
 # Installing pytorch with CUDA is weird, check https://pytorch.org/ for instructions.
 
 if __name__ == "__main__":
-    model_type = input("Please choose a model type (Transformer, RNNTorch, RNN, LSTMTorch, LSTM, GRUTorch, GRU, EncoderDecoder, EncoderDecoderTorch, T5): ")
-    encoder_length = 512
-    context_length = 128
+    model_type = input("Please choose a model type (Transformer, RNNTorch, RNN, LSTMTorch, LSTM, GRUTorch, GRU, EncoderDecoder, EncoderDecoderTorch, T5, Bart, LED): ")
+    encoder_length = 4096
+    context_length = 256
     torch.manual_seed(42)
     lightning.seed_everything(42)
 
@@ -43,6 +46,12 @@ if __name__ == "__main__":
         model = Models.Instructions.EncoderDecoderTorch.EncoderDecoderTransformerTorch(encoder_length, context_length, 4, 2048, 512, 2, 0.0, data.tokenizer.vocab_size)
     elif model_type == "T5":
         model = Models.Instructions.FineTunedT5.FineTunedT5()
+    elif model_type == "Bart":
+        model = Models.Instructions.FineTunedBart.FineTunedBart()
+    elif model_type == "LED":
+        model = Models.Instructions.FineTunedLongformer.FineTunedLED()
+    elif model_type == "BBP":
+        model = Models.Instructions.FineTunedBigBirdPegasus.FineTunedBBP()
 
     mode = input("Please choose a mode (train, test, optuna): ")
     if mode == "test":
@@ -72,17 +81,18 @@ if __name__ == "__main__":
 
                     generation_input += "\n" + new_input
 
-                model.generate(generation_input, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p), compression=int(compression), print_live=True)
+                model.generate(generation_input, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p), print_live=True, truncate=False)
             except Exception as e:
+                print(e)
                 continue
             
     elif mode == "train":
         # Create a trainer and a checkpointer.
         checkpointer = callbacks.ModelCheckpoint(monitor="val_loss", mode="min", dirpath="checkpoints", filename=type(model).__name__)
-        trainer = lightning.Trainer(deterministic=True, callbacks=[checkpointer], val_check_interval=500)
+        trainer = lightning.Trainer(deterministic=True, callbacks=[checkpointer], val_check_interval=500, precision="16-mixed")
 
         # Load datasets and split them into train, validation and test sets.
-        dataset = data.SummarizationDataset(encoder_input_length=encoder_length, decoder_input_length=context_length, samples=250000, batch_size=4)
+        dataset = data.PubMedDataset(encoder_input_length=encoder_length, decoder_input_length=context_length, samples=2500, train_batch_size=1, test_batch_size=1)
 
         # Load checkpoint if wanted and the file exists.
         if os.path.isfile("checkpoints/" + type(model).__name__ + ".ckpt") and input("Do you want to load a checkpoint? (y/n): ") == "y":

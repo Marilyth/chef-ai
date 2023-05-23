@@ -30,9 +30,10 @@ class EncoderDecoderDataset(torch.utils.data.Dataset):
 
 
 class SummarizationDataset(lightning.LightningDataModule):
-    def __init__(self, prefixes: List[str] = [None, None], batch_size: int = 8, encoder_input_length: int = 512, decoder_input_length: int = 128, samples: int = 2000, **kwargs):
+    def __init__(self, prefixes: List[str] = [None, None], train_batch_size: int = 8, test_batch_size: int = 8, encoder_input_length: int = 512, decoder_input_length: int = 128, samples: int = 2000, **kwargs):
         super().__init__()
-        self.batch_size = batch_size
+        self.batch_size = train_batch_size
+        self.test_batch_size = test_batch_size
         self.max_source_length = encoder_input_length
         # +1 because the decoder is used as both input and output, shifted by 1.
         self.max_target_length = decoder_input_length + 1
@@ -81,7 +82,8 @@ class SummarizationDataset(lightning.LightningDataModule):
                 if prefix is not None:
                     data = [prefix + data_point for data_point in data]
 
-                tokenized[j].extend(add_start_tokens(tokenizer(data, max_length=max_lengths[j], padding="max_length", truncation=True, **kwargs).data["input_ids"]))
+                new_tokens = add_start_tokens(tokenizer(data, max_length=max_lengths[j], padding="max_length", truncation=True, **kwargs).data["input_ids"])
+                tokenized[j].extend(new_tokens)
 
         return tokenized
 
@@ -92,14 +94,14 @@ class SummarizationDataset(lightning.LightningDataModule):
         return torch.utils.data.DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True)
 
     def val_dataloader(self) -> torch.utils.data.DataLoader:
-        return torch.utils.data.DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False)
+        return torch.utils.data.DataLoader(self.val_dataset, batch_size=self.test_batch_size, shuffle=False)
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
-        return torch.utils.data.DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False)
+        return torch.utils.data.DataLoader(self.test_dataset, batch_size=self.test_batch_size, shuffle=False)
     
 class TranslationDataset(SummarizationDataset):
-    def __init__(self, prefixes: List[str] = [None, None], batch_size: int = 8, encoder_input_length: int = 64, decoder_input_length: int = 64, samples: int = 2000, **kwargs):
-        super().__init__(batch_size, prefixes, encoder_input_length, decoder_input_length, samples, **kwargs)
+    def __init__(self, prefixes: List[str] = [None, None], train_batch_size: int = 8, test_batch_size: int = 8, encoder_input_length: int = 64, decoder_input_length: int = 64, samples: int = 2000, **kwargs):
+        super().__init__(train_batch_size=train_batch_size, test_batch_size=test_batch_size, prefixes=prefixes, encoder_input_length=encoder_input_length, decoder_input_length=decoder_input_length, samples=samples, **kwargs)
 
     def setup(self, stage):
         if stage == "fit":
@@ -115,7 +117,27 @@ class TranslationDataset(SummarizationDataset):
             tokenized = self.tokenize_iteratively(self.test_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["de", "en"], column_first=False)
             self.test_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
 
-tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("t5-small")
+class PubMedDataset(SummarizationDataset):
+    def __init__(self, prefixes: List[str] = [None, None], train_batch_size: int = 8, test_batch_size: int = 8, encoder_input_length: int = 64, decoder_input_length: int = 64, samples: int = 2000, **kwargs):
+        super().__init__(train_batch_size=train_batch_size, test_batch_size=test_batch_size, prefixes=prefixes, encoder_input_length=encoder_input_length, decoder_input_length=decoder_input_length, samples=samples, **kwargs)
+
+    def setup(self, stage):
+        if stage == "fit":
+            self.train_dataset = load_dataset("scientific_papers", "pubmed", split="train")[:self.samples]
+            tokenized = self.tokenize_iteratively(self.train_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["article", "abstract"])
+            self.train_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
+            
+            self.val_dataset = load_dataset("scientific_papers", "pubmed", split="validation")[:80]
+            tokenized = self.tokenize_iteratively(self.val_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["article", "abstract"])
+            self.val_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
+        elif stage == "test":
+            self.test_dataset = load_dataset("scientific_papers", "pubmed", split="test")[:80]
+            tokenized = self.tokenize_iteratively(self.test_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["article", "abstract"])
+            self.test_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
+
+#tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("t5-small")
+#tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("facebook/bart-base")
+tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("allenai/led-base-16384")
 
 def get_texts(data_name: str = "RAW_recipes.csv", **kwargs) -> pandas.DataFrame:
     """Returns a list of all elements in the dataset of the file.
