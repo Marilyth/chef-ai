@@ -466,7 +466,9 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
                 if type(logits) is list or type(logits) is tuple:
                     states = logits[1:]
                     logits = logits[0]
-
+                elif not type(logits) is torch.Tensor:
+                    logits = logits.logits
+                    
                 # Take the last logit, which is the one for the last token.
                 last_logit = logits[-1, -1, :]
 
