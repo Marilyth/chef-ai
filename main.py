@@ -16,6 +16,7 @@ import torch
 import pytorch_lightning as lightning
 import pytorch_lightning.callbacks as callbacks
 import os
+import torchmetrics
 
 # Installing pytorch with CUDA is weird, check https://pytorch.org/ for instructions.
 
@@ -49,7 +50,7 @@ if __name__ == "__main__":
     elif model_type == "Bart":
         model = Models.Instructions.FineTunedBart.FineTunedBart()
     elif model_type == "LED":
-        model = Models.Instructions.FineTunedLongformer.FineTunedLED()
+        model = Models.Instructions.FineTunedLongformer.FineTunedLEDHug()
     elif model_type == "BBP":
         model = Models.Instructions.FineTunedBigBirdPegasus.FineTunedBBP()
 
@@ -68,9 +69,12 @@ if __name__ == "__main__":
                 top_p = input("Please provide a top_p, the default is 1: ")
                 if top_p == "":
                     top_p = 1
-                compression = input("Please provide a compression value, the default is 0: ")
-                if compression == "":
-                    compression = 0
+                presence_penalty = input("Please provide a presence_penalty, the default is 0: ")
+                if presence_penalty == "":
+                    presence_penalty = 0
+                repetition_penalty = input("Please provide a repetition_penalty, the default is 0: ")
+                if repetition_penalty == "":
+                    repetition_penalty = 0
 
                 # Take multiline input until the user enters eof.
                 generation_input = input("If you want, you can provide a beginning for the text generation now: ")
@@ -81,18 +85,29 @@ if __name__ == "__main__":
 
                     generation_input += "\n" + new_input
 
-                model.generate(generation_input, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p), print_live=True, truncate=False)
+                model.generate(generation_input, temperature=float(temperature), top_k=int(top_k), top_p=float(top_p), presence_penalty=float(presence_penalty), repetition_penalty=float(repetition_penalty), print_live=True, truncate=False)
             except Exception as e:
                 print(e)
                 continue
-            
+    elif mode == "rouge":
+        dataset = data.PubMedDataset(encoder_input_length=encoder_length, decoder_input_length=context_length, samples=1, train_batch_size=1, test_batch_size=1)
+        model = model.load_from_checkpoint("checkpoints/" + type(model).__name__ + ".ckpt")
+        results = [[],[]]
+        for batch in dataset.test_dataloader():
+            input = data.tokenizer.decode(batch[0])
+            target = data.tokenizer.decode(batch[1])
+            generated = model.generate(input, print_live=True, truncate=False)
+            results[0].append(generated)
+            results[1].append(target)
+        rouge = torchmetrics.functional.rouge_score(results[0], results[1])
+        print(rouge)
     elif mode == "train":
         # Create a trainer and a checkpointer.
         checkpointer = callbacks.ModelCheckpoint(monitor="val_loss", mode="min", dirpath="checkpoints", filename=type(model).__name__)
         trainer = lightning.Trainer(deterministic=True, callbacks=[checkpointer], val_check_interval=500, precision="16-mixed")
 
         # Load datasets and split them into train, validation and test sets.
-        dataset = data.PubMedDataset(encoder_input_length=encoder_length, decoder_input_length=context_length, samples=2500, train_batch_size=1, test_batch_size=1)
+        dataset = data.PubMedDataset(encoder_input_length=encoder_length, decoder_input_length=context_length, samples=130000, train_batch_size=1, test_batch_size=1)
 
         # Load checkpoint if wanted and the file exists.
         if os.path.isfile("checkpoints/" + type(model).__name__ + ".ckpt") and input("Do you want to load a checkpoint? (y/n): ") == "y":

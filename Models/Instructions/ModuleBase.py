@@ -6,6 +6,8 @@ from Data.data import *
 import tqdm
 import time
 import pytorch_lightning as lightning
+import torchmetrics
+from transformers import generation_utils
 from abc import ABC
 import optuna
 
@@ -421,7 +423,7 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
         return study.best_params, study.best_value
     
     @torch.no_grad()
-    def generate(self, encoder_text: str = None, temperature: float = 1.0, top_k: int = -1, top_p: float = 1.0, print_live: bool = False, truncate: bool = True) -> str:
+    def generate(self, encoder_text: str = None, temperature: float = 1.0, top_k: int = -1, top_p: float = 1.0, repetition_penalty: float = 0.0, presence_penalty: float = 0.0, print_live: bool = False, truncate: bool = True) -> str:
         """Generates text using the model. If a beginning is specified, the model will continue the text. Otherwise, it will generate a new text.
         The model will generate text until it reaches the end token. This may never happen if the model is not trained well enough.
 
@@ -451,7 +453,7 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
             encoder_tokens = tokenizer(chunk, max_length=self.source_length - 1, truncation=True, padding=True).data['input_ids']
         else:
             encoder_tokens = tokenizer(chunk).data['input_ids']
-        encoder_tokens = torch.tensor(add_start_tokens([encoder_tokens])).to(self.device)
+        encoder_tokens = torch.tensor(add_start_tokens([encoder_tokens]))[:, :4096].to(self.device)
         
         states = []
 
@@ -477,6 +479,21 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
                     top_k_probs, top_k_indices = torch.topk(probs, top_k)
                     probs = torch.zeros_like(probs).scatter_(0, top_k_indices, top_k_probs)
                     probs = probs / torch.sum(probs)
+
+                # Calculate the repetition penalty
+                if repetition_penalty > 0:
+                    for i, token in enumerate(word_codes):
+                        distance = len(word_codes) - i
+                        # Reduce the probability of generating a token for each time it has been generated
+                        probs[token] /= 1 + repetition_penalty
+                        probs = probs / torch.sum(probs)
+                
+                # Calculate the repetition penalty
+                if presence_penalty > 0:
+                    for token in set(word_codes):
+                        # Reduce the probability of generating a token that has been generated already
+                        probs[token] /= 1 + repetition_penalty
+                        probs = probs / torch.sum(probs)
 
                 # Take the top p words.
                 if top_p < 1.0:
