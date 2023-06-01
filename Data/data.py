@@ -135,9 +135,11 @@ class PubMedDataset(SummarizationDataset):
             tokenized = self.tokenize_iteratively(self.test_dataset, [self.max_source_length - 1, self.max_target_length - 1], ["article", "abstract"])
             self.test_dataset = EncoderDecoderDataset(tokenized[0], tokenized[1])
 
-#tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("t5-small")
+tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("google/long-t5-tglobal-large")
 #tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("facebook/bart-base")
-tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("allenai/led-base-16384")
+#tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("allenai/led-base-16384")
+#tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("allenai/led-large-16384")
+#tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained("google/bigbird-pegasus-large-pubmed")
 
 def get_texts(data_name: str = "RAW_recipes.csv", **kwargs) -> pandas.DataFrame:
     """Returns a list of all elements in the dataset of the file.

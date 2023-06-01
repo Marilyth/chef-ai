@@ -12,6 +12,8 @@ from abc import ABC
 import optuna
 
 
+first_step = True
+
 class DecoderOnlyBase(lightning.LightningModule, ABC):
     def step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int, log_name: str) -> torch.Tensor:
         """Performs a training or validation step.
@@ -308,6 +310,8 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
         # If the model returns a list, take the first element. Those are the logits.
         if type(output) is list or type(output) is tuple:
             output = output[0]
+        elif not type(output) is torch.Tensor:
+            output = output.logits
         
         B, T, C = output.shape
         target = target.reshape(B*T)
@@ -331,6 +335,17 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
         Returns:
             torch.Tensor: The loss of the batch.
         """
+        global first_step
+        if first_step:
+            self.optimizer.param_groups[0]["lr"] = 5e-4
+            # Reset the best score to 100 so that the model is saved.
+            self.trainer.callbacks[-1].best_model_score = torch.tensor(100)
+            self.trainer.callbacks[-1].kth_value = torch.tensor(100)
+            self.trainer.callbacks[-1].best_k_models = {}
+            
+            self.scheduler.factor = 0.1
+            self.scheduler.patience = 5
+            first_step = False
         return self.step(batch, batch_idx, "train_loss")
     
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
@@ -423,7 +438,7 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
         return study.best_params, study.best_value
     
     @torch.no_grad()
-    def generate(self, encoder_text: str = None, temperature: float = 1.0, top_k: int = -1, top_p: float = 1.0, repetition_penalty: float = 0.0, presence_penalty: float = 0.0, print_live: bool = False, truncate: bool = True) -> str:
+    def generate(self, encoder_text: str = None, temperature: float = 1.0, top_k: int = -1, top_p: float = 1.0, repetition_penalty: float = 0.0, presence_penalty: float = 0.0, max_length: int = 512, print_live: bool = False, truncate: bool = True) -> str:
         """Generates text using the model. If a beginning is specified, the model will continue the text. Otherwise, it will generate a new text.
         The model will generate text until it reaches the end token. This may never happen if the model is not trained well enough.
 
@@ -457,7 +472,7 @@ class EncoderDecoderModuleBase(lightning.LightningModule):
         
         states = []
 
-        while True:
+        while len(word_codes) < max_length:
             try:
                 # Model generated result for every index of context. We only need the last one.
                 logits = self.forward(encoder_tokens, torch.tensor([context]).to(self.device), *states)

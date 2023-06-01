@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from transformers import T5Model
+from transformers import T5Model, LongT5ForConditionalGeneration
 from Models.Instructions.ModuleBase import EncoderDecoderModuleBase
 
 
@@ -37,4 +37,36 @@ class FineTunedT5(EncoderDecoderModuleBase):
         result = self.mlp_out(outputs)
 
         return result
+
+class FineTunedLongT5(EncoderDecoderModuleBase):
+    def __init__(self):
+        super().__init__()
+        # Pretrained T5 model without a head.
+        self.model = LongT5ForConditionalGeneration.from_pretrained("whaleloops/longt5-tglobal-large-16384-pubmed-10k_steps")
+        self.model.gradient_checkpointing_enable()
+        self.model.config.num_beams = 4
+        self.model.config.max_length = 512
+        self.model.config.min_length = 100
+        self.model.config.length_penalty = 2.0
+        self.model.config.early_stopping = True
+        self.model.config.no_repeat_ngram_size = 3
+        self.source_length = self.model.config.n_positions
+        self.target_length = self.model.config.n_positions
+
+        # Freeze all parameters except the head.
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        for param in self.model.lm_head.parameters():
+            param.requires_grad = True
+
+        self.save_hyperparameters()
     
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
+        # Get the last hidden state from the T5 model.
+        outputs = self.model.forward(input_ids=src, decoder_input_ids=tgt)
+
+        return outputs
+    
+    def generate(self, *args, **kwargs):
+        return self.model.generate(*args, **kwargs)

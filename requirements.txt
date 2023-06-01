@@ -1,10 +1,11 @@
 kaggle
 pandas
 inflect
-torch
 tqdm
 tiktoken
 datasets
 lightning<2.0
 optuna
-torchmetrics
+evaluate
+transformers
+nltk
